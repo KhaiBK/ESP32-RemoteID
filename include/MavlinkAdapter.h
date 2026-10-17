@@ -23,7 +23,34 @@ public:
 private:
 
     DroneStateV1& state;
+    
+    // --------------------------------------------------
+// ARM / Takeoff reference state
+// --------------------------------------------------
 
+bool armed = false;
+
+bool takeoffReferencePending = false;
+
+bool takeoffReferenceValid = false;
+
+float takeoffAltitudeMslM = 0.0f;
+
+bool fcEmergency = false;
+
+bool ridSystemFailure = false;
+
+uint8_t landedState = MAV_LANDED_STATE_UNDEFINED;
+
+// --------------------------------------------------
+// UTC / boot-time synchronization
+// --------------------------------------------------
+
+bool timeSyncValid = false;
+
+int64_t unixMinusBootUs = 0;
+
+uint32_t timeSyncUpdatedMs = 0;
 
     // --------------------------------------------------
     // MAVLink message handlers
@@ -57,5 +84,9 @@ private:
     void handleSystemTime(
         const mavlink_message_t& msg,
         uint32_t nowMs
+    );
+
+    void updateOperationalStatus(
+          uint32_t nowMs
     );
 };

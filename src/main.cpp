@@ -109,6 +109,25 @@ void handleGpsRaw(const mavlink_message_t &msg)
     Serial.print(gps.alt / 1000.0);
     Serial.println(" m");
 
+    Serial.print("Altitude HAE  : ");
+    Serial.print( gps.alt_ellipsoid / 1000.0,2);
+    Serial.println(" m");
+
+    Serial.print("Message len   : ");
+    Serial.println(msg.len);
+
+    Serial.print("H Accuracy raw: ");
+    Serial.print(gps.h_acc);
+    Serial.println(" mm");
+
+    Serial.print("V Accuracy raw: ");
+    Serial.print(gps.v_acc);
+    Serial.println(" mm");
+
+    Serial.print("Speed Acc raw : ");
+    Serial.print(gps.vel_acc);
+    Serial.println(" mm/s");
+
     Serial.print("Satellites    : ");
     Serial.println(gps.satellites_visible);
 
@@ -322,6 +341,94 @@ void handleSysStatus(const mavlink_message_t &msg)
 
 
 // ======================================================
+// SCALED
+// ======================================================
+void handleScaledPressureDebug(
+    const mavlink_message_t& msg
+)
+{
+    mavlink_scaled_pressure_t pressure;
+
+    mavlink_msg_scaled_pressure_decode(
+        &msg,
+        &pressure
+    );
+
+    Serial.println();
+    Serial.println("===== SCALED_PRESSURE =====");
+
+    Serial.print("Absolute pressure : ");
+    Serial.print(pressure.press_abs, 2);
+    Serial.println(" hPa");
+
+    Serial.print("Differential press: ");
+    Serial.print(pressure.press_diff, 2);
+    Serial.println(" hPa");
+
+    Serial.print("Temperature       : ");
+    Serial.print(pressure.temperature / 100.0f, 2);
+    Serial.println(" C");
+
+    Serial.println("===========================");
+}
+
+
+// ======================================================
+// EXTENDED_SYS_STATE
+// ======================================================
+void handleExtendedSysStateDebug(
+    const mavlink_message_t& msg
+)
+{
+    mavlink_extended_sys_state_t ext;
+
+    mavlink_msg_extended_sys_state_decode(
+        &msg,
+        &ext
+    );
+
+    Serial.println();
+    Serial.println("===== EXTENDED_SYS_STATE =====");
+
+    Serial.print("Landed state : ");
+    Serial.println(ext.landed_state);
+
+    Serial.print("VTOL state   : ");
+    Serial.println(ext.vtol_state);
+
+    Serial.println("==============================");
+}
+
+// ======================================================
+// SYSTEM_TIME
+// ======================================================
+
+void handleSystemTimeDebug(
+    const mavlink_message_t& msg
+)
+{
+    mavlink_system_time_t sys;
+
+    mavlink_msg_system_time_decode(
+        &msg,
+        &sys
+    );
+
+    Serial.println();
+    Serial.println("===== SYSTEM_TIME =====");
+
+    Serial.printf(
+        "Unix time us : %llu\n",
+        (unsigned long long)sys.time_unix_usec
+    );
+
+    Serial.print("Boot time ms : ");
+    Serial.println(sys.time_boot_ms);
+
+    Serial.println("=======================");
+}
+
+// ======================================================
 // SETUP
 // ======================================================
 void printDroneState()
@@ -352,6 +459,171 @@ void printDroneState()
     Serial.print("V Speed        : ");
     Serial.print(droneState.verticalSpeedMps, 2);
     Serial.println(" m/s");
+
+    Serial.print("Height valid    : ");
+    Serial.println(droneState.heightValid ? "YES" : "NO");
+
+    Serial.print("Height          : ");
+    Serial.print(droneState.heightM, 2);
+    Serial.println(" m");
+
+    Serial.print("Height reference: ");
+
+    if (droneState.heightReference ==
+     RidHeightReference::ABOVE_TAKEOFF)
+    {
+    Serial.println("ABOVE_TAKEOFF");
+    }
+    else
+   {
+       Serial.println("AGL");
+   }
+
+   Serial.print("Geodetic valid  : ");
+   Serial.println(
+    droneState.geodeticAltitudeValid
+        ? "YES"
+        : "NO"
+);
+
+Serial.print("Geodetic alt    : ");
+Serial.print(
+    droneState.geodeticAltitudeM,
+    2
+);
+Serial.println(" m HAE");
+
+Serial.print("H Accuracy valid: ");
+Serial.println(
+    droneState.horizontalAccuracyValid
+        ? "YES"
+        : "NO"
+);
+
+Serial.print("H Accuracy      : ");
+Serial.print(
+    droneState.horizontalAccuracyM,
+    3
+);
+Serial.println(" m");
+
+
+Serial.print("V Accuracy valid: ");
+Serial.println(
+    droneState.verticalAccuracyValid
+        ? "YES"
+        : "NO"
+);
+
+Serial.print("V Accuracy      : ");
+Serial.print(
+    droneState.verticalAccuracyM,
+    3
+);
+Serial.println(" m");
+
+
+Serial.print("Speed Acc valid : ");
+Serial.println(
+    droneState.speedAccuracyValid
+        ? "YES"
+        : "NO"
+);
+
+Serial.print("Speed Accuracy  : ");
+Serial.print(
+    droneState.speedAccuracyMps,
+    3
+);
+Serial.println(" m/s");
+
+Serial.print("Pressure Alt valid: ");
+Serial.println(
+    droneState.pressureAltitudeValid
+        ? "YES"
+        : "NO"
+);
+
+Serial.print("Pressure Alt      : ");
+Serial.print(
+    droneState.pressureAltitudeM,
+    2
+);
+Serial.println(" m");
+
+
+Serial.print("Operational valid: ");
+Serial.println(
+    droneState.operationalStatusValid
+        ? "YES"
+        : "NO"
+);
+
+Serial.print("Operational status : ");
+
+switch (droneState.operationalStatus)
+{
+    case RidOperationalStatus::GROUND:
+        Serial.println("GROUND");
+        break;
+
+    case RidOperationalStatus::AIRBORNE:
+        Serial.println("AIRBORNE");
+        break;
+
+    case RidOperationalStatus::EMERGENCY:
+        Serial.println("EMERGENCY");
+        break;
+
+    case RidOperationalStatus::RID_SYSTEM_FAILURE:
+        Serial.println("RID_SYSTEM_FAILURE");
+        break;
+
+    case RidOperationalStatus::UNDECLARED:
+    default:
+        Serial.println("UNDECLARED");
+        break;
+}
+
+ Serial.print("Timestamp valid : ");
+Serial.println(
+    droneState.locationTimestampValid
+        ? "YES"
+        : "NO"
+);
+
+
+if (droneState.locationTimestampValid)
+{
+    uint64_t milliseconds =
+        droneState.locationTimestampUtcUs /
+        1000ULL;
+
+    uint32_t msSinceHour =
+        milliseconds % 3600000ULL;
+
+    float secondsSinceHour =
+        msSinceHour / 1000.0f;
+
+    Serial.print("Time since hour: ");
+    Serial.print(secondsSinceHour, 1);
+    Serial.println(" s");
+
+    Serial.print("Timestamp Acc valid: ");
+Serial.println(
+    droneState.timestampAccuracyValid
+        ? "YES"
+        : "NO"
+);
+
+Serial.print("Timestamp Accuracy : ");
+Serial.print(
+    droneState.timestampAccuracyS,
+    1
+);
+Serial.println(" s");
+}
+
 
     Serial.println("====================================");
 }
@@ -428,7 +700,15 @@ void loop()
                 case MAVLINK_MSG_ID_VFR_HUD:
                     handleVfrHud(msg);
                     break;
-
+                case MAVLINK_MSG_ID_SCALED_PRESSURE:
+                    handleScaledPressureDebug(msg);
+                    break;
+                case MAVLINK_MSG_ID_EXTENDED_SYS_STATE:
+                    handleExtendedSysStateDebug(msg);
+                    break;
+                case MAVLINK_MSG_ID_SYSTEM_TIME:
+                    handleSystemTimeDebug(msg);
+                    break;
                 default:
                     break;
             }
