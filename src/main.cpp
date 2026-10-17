@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <ardupilotmega/mavlink.h>
+#include "DroneState.h"
+#include "MavlinkAdapter.h"
+
 
 HardwareSerial FCSerial(2);
 
@@ -9,6 +12,11 @@ static const int FC_TX = 32;
 
 mavlink_message_t msg;
 mavlink_status_t status;
+
+DroneStateV1 droneState;
+MavlinkAdapter mavlinkAdapter(droneState);
+
+uint32_t lastDroneStatePrint = 0;
 
 uint32_t byteCount = 0;
 uint32_t messageCount = 0;
@@ -316,6 +324,38 @@ void handleSysStatus(const mavlink_message_t &msg)
 // ======================================================
 // SETUP
 // ======================================================
+void printDroneState()
+{
+    Serial.println();
+    Serial.println("========== DRONE STATE V1 ==========");
+
+    Serial.print("Position valid : ");
+    Serial.println(droneState.positionValid ? "YES" : "NO");
+
+    Serial.print("Latitude       : ");
+    Serial.println(droneState.latitudeDeg, 7);
+
+    Serial.print("Longitude      : ");
+    Serial.println(droneState.longitudeDeg, 7);
+
+    Serial.print("H Speed        : ");
+    Serial.print(droneState.horizontalSpeedMps, 2);
+    Serial.println(" m/s");
+
+    Serial.print("Track valid    : ");
+    Serial.println(droneState.trackDirectionValid ? "YES" : "NO");
+
+    Serial.print("Track Direction: ");
+    Serial.print(droneState.trackDirectionDeg, 2);
+    Serial.println(" deg");
+
+    Serial.print("V Speed        : ");
+    Serial.print(droneState.verticalSpeedMps, 2);
+    Serial.println(" m/s");
+
+    Serial.println("====================================");
+}
+
 
 void setup()
 {
@@ -358,7 +398,9 @@ void loop()
                 c,
                 &msg,
                 &status))
-        {
+        {   
+            mavlinkAdapter.handleMessage(msg, millis());
+
             messageCount++;
 
             switch (msg.msgid)
@@ -409,4 +451,9 @@ void loop()
 
         Serial.println("------------------------");
     }
+     if (millis() - lastDroneStatePrint >= 1000)
+{
+    lastDroneStatePrint = millis();
+    printDroneState();
+}
 }
