@@ -72,44 +72,67 @@ void MavlinkAdapter::handleHeartbeat(
         &heartbeat
     );
 
+   bool newArmedState =
+    (heartbeat.base_mode &
+     MAV_MODE_FLAG_SAFETY_ARMED) != 0;
 
-    bool newArmedState =
-        (heartbeat.base_mode &
-         MAV_MODE_FLAG_SAFETY_ARMED) != 0;
-
-    
-    fcEmergency =
-        (heartbeat.system_status ==
-         MAV_STATE_EMERGENCY);
-    // --------------------------------------------------
-    // Detect DISARMED -> ARMED transition
-    // --------------------------------------------------
-
-    if (!armed && newArmedState)
-    {
-        takeoffReferencePending = true;
-        takeoffReferenceValid = false;
-
-        state.heightValid = false;
-    }
+fcEmergency =
+    (heartbeat.system_status ==
+     MAV_STATE_EMERGENCY);
 
 
-    // --------------------------------------------------
-    // Detect ARMED -> DISARMED transition
-    // --------------------------------------------------
+// ==================================================
+// First HEARTBEAT
+//
+// Synchronize current armed state only.
+// Do NOT interpret it as an arm/disarm transition.
+// ==================================================
 
-    if (armed && !newArmedState)
-    {
-        takeoffReferencePending = false;
-        takeoffReferenceValid = false;
-
-        state.heightValid = false;
-    }
-
-
+if (!armedStateInitialized)
+{
     armed = newArmedState;
+    armedStateInitialized = true;
 
-   updateOperationalStatus(nowMs);
+    takeoffReferencePending = false;
+    takeoffReferenceValid = false;
+
+    state.heightValid = false;
+
+    updateOperationalStatus(nowMs);
+    return;
+}
+
+
+// ==================================================
+// DISARMED -> ARMED
+// ==================================================
+
+if (!armed && newArmedState)
+{
+    takeoffReferencePending = true;
+    takeoffReferenceValid = false;
+
+    state.heightValid = false;
+}
+
+
+// ==================================================
+// ARMED -> DISARMED
+// ==================================================
+
+if (armed && !newArmedState)
+{
+    takeoffReferencePending = false;
+    takeoffReferenceValid = false;
+
+    state.heightValid = false;
+}
+
+
+armed = newArmedState;
+
+updateOperationalStatus(nowMs);
+   
 }
 
 
@@ -138,32 +161,23 @@ void MavlinkAdapter::updateOperationalStatus(
     uint32_t nowMs
 )
 {
-    // Highest priority:
-    // failure of the Remote ID module itself
-    if (ridSystemFailure)
-    {
-        state.operationalStatus =
-            RidOperationalStatus::RID_SYSTEM_FAILURE;
+    // --------------------------------------------------
+    // Emergency reported by the flight controller
+    // has priority over normal landed state.
+    // --------------------------------------------------
 
-        state.operationalStatusValid = true;
-    }
-
-    // Flight controller emergency
-    else if (fcEmergency)
+    if (fcEmergency)
     {
         state.operationalStatus =
             RidOperationalStatus::EMERGENCY;
 
         state.operationalStatusValid = true;
     }
-
-    // Normal flight state
     else
     {
         switch (landedState)
         {
             case MAV_LANDED_STATE_ON_GROUND:
-
                 state.operationalStatus =
                     RidOperationalStatus::GROUND;
 
@@ -176,7 +190,6 @@ void MavlinkAdapter::updateOperationalStatus(
             case MAV_LANDED_STATE_TAKEOFF:
 
             case MAV_LANDED_STATE_LANDING:
-
                 state.operationalStatus =
                     RidOperationalStatus::AIRBORNE;
 
@@ -187,7 +200,6 @@ void MavlinkAdapter::updateOperationalStatus(
             case MAV_LANDED_STATE_UNDEFINED:
 
             default:
-
                 state.operationalStatus =
                     RidOperationalStatus::UNDECLARED;
 

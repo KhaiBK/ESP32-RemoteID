@@ -28,6 +28,8 @@ private:
 // ARM / Takeoff reference state
 // --------------------------------------------------
 
+bool armedStateInitialized = false;
+
 bool armed = false;
 
 bool takeoffReferencePending = false;
@@ -38,7 +40,6 @@ float takeoffAltitudeMslM = 0.0f;
 
 bool fcEmergency = false;
 
-bool ridSystemFailure = false;
 
 uint8_t landedState = MAV_LANDED_STATE_UNDEFINED;
 

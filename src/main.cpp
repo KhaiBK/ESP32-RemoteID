@@ -2,6 +2,8 @@
 #include <ardupilotmega/mavlink.h>
 #include "DroneState.h"
 #include "MavlinkAdapter.h"
+#include "RidLocationMapper.h"
+#include "RidLocationEncoder.h"
 
 
 HardwareSerial FCSerial(2);
@@ -15,6 +17,8 @@ mavlink_status_t status;
 
 DroneStateV1 droneState;
 MavlinkAdapter mavlinkAdapter(droneState);
+RidLocationMapper ridLocationMapper;
+RidLocationEncoder ridLocationEncoder;
 
 uint32_t lastDroneStatePrint = 0;
 
@@ -436,198 +440,548 @@ void printDroneState()
     Serial.println();
     Serial.println("========== DRONE STATE V1 ==========");
 
-    Serial.print("Position valid : ");
-    Serial.println(droneState.positionValid ? "YES" : "NO");
 
-    Serial.print("Latitude       : ");
-    Serial.println(droneState.latitudeDeg, 7);
+    // ==================================================
+    // Position
+    // ==================================================
 
-    Serial.print("Longitude      : ");
-    Serial.println(droneState.longitudeDeg, 7);
+    Serial.print("Position valid      : ");
+    Serial.println(
+        droneState.positionValid
+            ? "YES"
+            : "NO"
+    );
 
-    Serial.print("H Speed        : ");
-    Serial.print(droneState.horizontalSpeedMps, 2);
+    Serial.print("Latitude            : ");
+    Serial.println(
+        droneState.latitudeDeg,
+        7
+    );
+
+    Serial.print("Longitude           : ");
+    Serial.println(
+        droneState.longitudeDeg,
+        7
+    );
+
+
+    // ==================================================
+    // Horizontal Motion
+    // ==================================================
+
+    Serial.print("H Speed valid       : ");
+    Serial.println(
+        droneState.horizontalSpeedValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("H Speed             : ");
+    Serial.print(
+        droneState.horizontalSpeedMps,
+        2
+    );
     Serial.println(" m/s");
 
-    Serial.print("Track valid    : ");
-    Serial.println(droneState.trackDirectionValid ? "YES" : "NO");
 
-    Serial.print("Track Direction: ");
-    Serial.print(droneState.trackDirectionDeg, 2);
+    Serial.print("Track valid         : ");
+    Serial.println(
+        droneState.trackDirectionValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("Track Direction     : ");
+    Serial.print(
+        droneState.trackDirectionDeg,
+        2
+    );
     Serial.println(" deg");
 
-    Serial.print("V Speed        : ");
-    Serial.print(droneState.verticalSpeedMps, 2);
+
+    // ==================================================
+    // Vertical Motion
+    // ==================================================
+
+    Serial.print("V Speed valid       : ");
+    Serial.println(
+        droneState.verticalSpeedValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("V Speed             : ");
+    Serial.print(
+        droneState.verticalSpeedMps,
+        2
+    );
     Serial.println(" m/s");
 
-    Serial.print("Height valid    : ");
-    Serial.println(droneState.heightValid ? "YES" : "NO");
 
-    Serial.print("Height          : ");
-    Serial.print(droneState.heightM, 2);
+    // ==================================================
+    // Height
+    // ==================================================
+
+    Serial.print("Height valid        : ");
+    Serial.println(
+        droneState.heightValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("Height              : ");
+    Serial.print(
+        droneState.heightM,
+        2
+    );
     Serial.println(" m");
 
-    Serial.print("Height reference: ");
+    Serial.print("Height reference    : ");
 
     if (droneState.heightReference ==
-     RidHeightReference::ABOVE_TAKEOFF)
+        RidHeightReference::ABOVE_TAKEOFF)
     {
-    Serial.println("ABOVE_TAKEOFF");
+        Serial.println("ABOVE_TAKEOFF");
     }
     else
-   {
-       Serial.println("AGL");
-   }
-
-   Serial.print("Geodetic valid  : ");
-   Serial.println(
-    droneState.geodeticAltitudeValid
-        ? "YES"
-        : "NO"
-);
-
-Serial.print("Geodetic alt    : ");
-Serial.print(
-    droneState.geodeticAltitudeM,
-    2
-);
-Serial.println(" m HAE");
-
-Serial.print("H Accuracy valid: ");
-Serial.println(
-    droneState.horizontalAccuracyValid
-        ? "YES"
-        : "NO"
-);
-
-Serial.print("H Accuracy      : ");
-Serial.print(
-    droneState.horizontalAccuracyM,
-    3
-);
-Serial.println(" m");
+    {
+        Serial.println("AGL");
+    }
 
 
-Serial.print("V Accuracy valid: ");
-Serial.println(
-    droneState.verticalAccuracyValid
-        ? "YES"
-        : "NO"
-);
+    // ==================================================
+    // Altitudes
+    // ==================================================
 
-Serial.print("V Accuracy      : ");
-Serial.print(
-    droneState.verticalAccuracyM,
-    3
-);
-Serial.println(" m");
+    Serial.print("Pressure Alt valid  : ");
+    Serial.println(
+        droneState.pressureAltitudeValid
+            ? "YES"
+            : "NO"
+    );
 
-
-Serial.print("Speed Acc valid : ");
-Serial.println(
-    droneState.speedAccuracyValid
-        ? "YES"
-        : "NO"
-);
-
-Serial.print("Speed Accuracy  : ");
-Serial.print(
-    droneState.speedAccuracyMps,
-    3
-);
-Serial.println(" m/s");
-
-Serial.print("Pressure Alt valid: ");
-Serial.println(
-    droneState.pressureAltitudeValid
-        ? "YES"
-        : "NO"
-);
-
-Serial.print("Pressure Alt      : ");
-Serial.print(
-    droneState.pressureAltitudeM,
-    2
-);
-Serial.println(" m");
+    Serial.print("Pressure Alt        : ");
+    Serial.print(
+        droneState.pressureAltitudeM,
+        2
+    );
+    Serial.println(" m");
 
 
-Serial.print("Operational valid: ");
-Serial.println(
-    droneState.operationalStatusValid
-        ? "YES"
-        : "NO"
-);
+    Serial.print("Geodetic valid      : ");
+    Serial.println(
+        droneState.geodeticAltitudeValid
+            ? "YES"
+            : "NO"
+    );
 
-Serial.print("Operational status : ");
-
-switch (droneState.operationalStatus)
-{
-    case RidOperationalStatus::GROUND:
-        Serial.println("GROUND");
-        break;
-
-    case RidOperationalStatus::AIRBORNE:
-        Serial.println("AIRBORNE");
-        break;
-
-    case RidOperationalStatus::EMERGENCY:
-        Serial.println("EMERGENCY");
-        break;
-
-    case RidOperationalStatus::RID_SYSTEM_FAILURE:
-        Serial.println("RID_SYSTEM_FAILURE");
-        break;
-
-    case RidOperationalStatus::UNDECLARED:
-    default:
-        Serial.println("UNDECLARED");
-        break;
-}
-
- Serial.print("Timestamp valid : ");
-Serial.println(
-    droneState.locationTimestampValid
-        ? "YES"
-        : "NO"
-);
+    Serial.print("Geodetic Alt        : ");
+    Serial.print(
+        droneState.geodeticAltitudeM,
+        2
+    );
+    Serial.println(" m HAE");
 
 
-if (droneState.locationTimestampValid)
-{
-    uint64_t milliseconds =
-        droneState.locationTimestampUtcUs /
-        1000ULL;
+    // ==================================================
+    // Accuracy
+    // ==================================================
 
-    uint32_t msSinceHour =
-        milliseconds % 3600000ULL;
+    Serial.print("H Accuracy valid    : ");
+    Serial.println(
+        droneState.horizontalAccuracyValid
+            ? "YES"
+            : "NO"
+    );
 
-    float secondsSinceHour =
-        msSinceHour / 1000.0f;
+    Serial.print("H Accuracy          : ");
+    Serial.print(
+        droneState.horizontalAccuracyM,
+        3
+    );
+    Serial.println(" m");
 
-    Serial.print("Time since hour: ");
-    Serial.print(secondsSinceHour, 1);
+
+    Serial.print("V Accuracy valid    : ");
+    Serial.println(
+        droneState.verticalAccuracyValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("V Accuracy          : ");
+    Serial.print(
+        droneState.verticalAccuracyM,
+        3
+    );
+    Serial.println(" m");
+
+
+    Serial.print("Baro Acc valid      : ");
+    Serial.println(
+        droneState.barometricAltitudeAccuracyValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("Baro Accuracy       : ");
+    Serial.print(
+        droneState.barometricAltitudeAccuracyM,
+        3
+    );
+    Serial.println(" m");
+
+
+    Serial.print("Speed Acc valid     : ");
+    Serial.println(
+        droneState.speedAccuracyValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("Speed Accuracy      : ");
+    Serial.print(
+        droneState.speedAccuracyMps,
+        3
+    );
+    Serial.println(" m/s");
+
+
+    // ==================================================
+    // Operational Status
+    // ==================================================
+
+    Serial.print("Operational valid   : ");
+    Serial.println(
+        droneState.operationalStatusValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("Operational status  : ");
+
+    switch (droneState.operationalStatus)
+    {
+        case RidOperationalStatus::GROUND:
+            Serial.println("GROUND");
+            break;
+
+        case RidOperationalStatus::AIRBORNE:
+            Serial.println("AIRBORNE");
+            break;
+
+        case RidOperationalStatus::EMERGENCY:
+            Serial.println("EMERGENCY");
+            break;
+
+        case RidOperationalStatus::UNDECLARED:
+        default:
+            Serial.println("UNDECLARED");
+            break;
+    }
+
+
+    // ==================================================
+    // Location Timestamp
+    // ==================================================
+
+    Serial.print("Timestamp valid     : ");
+    Serial.println(
+        droneState.locationTimestampValid
+            ? "YES"
+            : "NO"
+    );
+
+    if (droneState.locationTimestampValid)
+    {
+        uint64_t milliseconds =
+            droneState.locationTimestampUtcUs /
+            1000ULL;
+
+        uint32_t msSinceHour =
+            milliseconds %
+            3600000ULL;
+
+        float secondsSinceHour =
+            msSinceHour /
+            1000.0f;
+
+        Serial.print("Time since hour     : ");
+        Serial.print(
+            secondsSinceHour,
+            1
+        );
+        Serial.println(" s");
+    }
+    else
+    {
+        Serial.println(
+            "Time since hour     : N/A"
+        );
+    }
+
+
+    // ==================================================
+    // Timestamp Accuracy
+    // ==================================================
+
+    Serial.print("Timestamp Acc valid : ");
+    Serial.println(
+        droneState.timestampAccuracyValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("Timestamp Accuracy  : ");
+    Serial.print(
+        droneState.timestampAccuracyS,
+        1
+    );
     Serial.println(" s");
-
-    Serial.print("Timestamp Acc valid: ");
-Serial.println(
-    droneState.timestampAccuracyValid
-        ? "YES"
-        : "NO"
-);
-
-Serial.print("Timestamp Accuracy : ");
-Serial.print(
-    droneState.timestampAccuracyS,
-    1
-);
-Serial.println(" s");
-}
 
 
     Serial.println("====================================");
 }
+//=====================================
+// RID_MAPPED
+//====================================
 
+void printRidLocationMapped()
+{
+    RidLocationMapped rid =
+        ridLocationMapper.map(droneState);
+
+    Serial.println();
+    Serial.println("======= ASTM MAPPED FIELDS =======");
+
+
+    // ==================================================
+    // Byte 1
+    // ==================================================
+
+    Serial.print("Operational code     : ");
+    Serial.println(
+        rid.operationalStatusCode
+    );
+
+    Serial.print("Height Type bit       : ");
+    Serial.println(
+        rid.heightTypeBit
+    );
+
+    Serial.print("EW Segment bit        : ");
+    Serial.println(
+        rid.ewDirectionSegmentBit
+    );
+
+    Serial.print("Speed Mult bit        : ");
+    Serial.println(
+        rid.speedMultiplierBit
+    );
+
+
+    // ==================================================
+    // Byte 2
+    // ==================================================
+
+    Serial.print("Track Direction code  : ");
+    Serial.println(
+        rid.trackDirectionCode
+    );
+
+
+    // ==================================================
+    // Byte 3
+    // ==================================================
+
+    Serial.print("Horizontal Speed code : ");
+    Serial.println(
+        rid.horizontalSpeedCode
+    );
+
+
+    // ==================================================
+    // Byte 4
+    // ==================================================
+
+    Serial.print("Vertical Speed code   : ");
+    Serial.println(
+        static_cast<int>(
+            rid.verticalSpeedCode
+        )
+    );
+
+
+    // ==================================================
+    // Position metadata
+    // ==================================================
+
+    Serial.print("Position valid        : ");
+    Serial.println(
+        rid.positionValid
+            ? "YES"
+            : "NO"
+    );
+
+
+    // ==================================================
+    // Bytes 5-8
+    // ==================================================
+
+    Serial.print("Latitude code         : ");
+    Serial.println(
+        rid.latitudeCode
+    );
+
+
+    // ==================================================
+    // Bytes 9-12
+    // ==================================================
+
+    Serial.print("Longitude code        : ");
+    Serial.println(
+        rid.longitudeCode
+    );
+
+
+    // ==================================================
+    // Bytes 13-14
+    // ==================================================
+
+    Serial.print("Pressure Alt code     : ");
+    Serial.println(
+        rid.pressureAltitudeCode
+    );
+
+
+    // ==================================================
+    // Bytes 15-16
+    // ==================================================
+
+    Serial.print("Geodetic Alt code     : ");
+    Serial.println(
+        rid.geodeticAltitudeCode
+    );
+
+
+    // ==================================================
+    // Bytes 17-18
+    // ==================================================
+
+    Serial.print("Height code           : ");
+    Serial.println(
+        rid.heightCode
+    );
+
+
+    // ==================================================
+    // Byte 19
+    // ==================================================
+
+    Serial.print("H Accuracy code       : ");
+    Serial.println(
+        rid.horizontalAccuracyCode
+    );
+
+    Serial.print("V Accuracy code       : ");
+    Serial.println(
+        rid.verticalAccuracyCode
+    );
+
+
+    // ==================================================
+    // Byte 20
+    // ==================================================
+
+    Serial.print("Baro Accuracy code    : ");
+    Serial.println(
+        rid.barometricAltitudeAccuracyCode
+    );
+
+    Serial.print("Speed Accuracy code   : ");
+    Serial.println(
+        rid.speedAccuracyCode
+    );
+
+
+    // ==================================================
+    // Bytes 21-22
+    // ==================================================
+
+    Serial.print("Timestamp valid       : ");
+    Serial.println(
+        rid.timestampValid
+            ? "YES"
+            : "NO"
+    );
+
+    Serial.print("Timestamp code        : ");
+    Serial.println(
+        rid.timestampCode
+    );
+
+
+    // ==================================================
+    // Byte 23
+    // ==================================================
+
+    Serial.print("Timestamp Acc code    : ");
+    Serial.println(
+        rid.timestampAccuracyCode
+    );
+
+
+    Serial.println("==================================");
+}
+
+//==========================================
+//RID_ENCODE
+//==========================================
+void printRidLocationEncoded()
+{
+    RidLocationMapped mapped =
+        ridLocationMapper.map(droneState);
+
+    uint8_t packet[
+        RidLocationEncoder::MESSAGE_SIZE
+    ];
+
+    ridLocationEncoder.encode(
+        mapped,
+        packet
+    );
+
+
+    Serial.println();
+    Serial.println("======= RID ENCODED =======");
+
+    for (size_t i = 0;
+         i < RidLocationEncoder::MESSAGE_SIZE;
+         ++i)
+    {
+        Serial.print("Byte ");
+
+        if (i < 10)
+        {
+            Serial.print(" ");
+        }
+
+        Serial.print(i);
+        Serial.print(" : 0x");
+
+        if (packet[i] < 0x10)
+        {
+            Serial.print("0");
+        }
+
+        Serial.println(
+            packet[i],
+            HEX
+        );
+    }
+
+    Serial.println("===========================");
+}
 
 void setup()
 {
@@ -735,5 +1089,7 @@ void loop()
 {
     lastDroneStatePrint = millis();
     printDroneState();
+    printRidLocationMapped();
+    printRidLocationEncoded();
 }
 }

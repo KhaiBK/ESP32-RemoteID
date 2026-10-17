@@ -12,7 +12,6 @@ enum class RidOperationalStatus : uint8_t
     GROUND,
     AIRBORNE,
     EMERGENCY,
-    RID_SYSTEM_FAILURE
 };
 
 enum class RidHeightReference : uint8_t
