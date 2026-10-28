@@ -4,6 +4,7 @@
 #include "MavlinkAdapter.h"
 #include "RidLocationMapper.h"
 #include "RidLocationEncoder.h"
+#include "RidOperatorIdEncoder.h"
 
 
 HardwareSerial FCSerial(2);
@@ -12,6 +13,19 @@ HardwareSerial FCSerial(2);
 static const int FC_RX = 33;
 static const int FC_TX = 32;
 
+// ======================================================
+// Remote ID Operator Configuration (ASTM F3411-22a Table 1 & Table 12)
+// Định dạng chuẩn theo Table 1: <ICAO Nationality Mark>.<CAA Assigned ID>
+// Ví dụ quốc gia Việt Nam (VN): "VN.OP2026840001" (Độ dài: tối đa 20 ký tự ASCII)
+// Table 12 quy định:
+//   - Msg Type: 0x5 (Operator ID Message)
+//   - Byte 1: Operator ID Type (0 = CAA_ASSIGNED / Operator ID)
+//   - Bytes 2..21: Operator ID string (ASCII, padded with nulls)
+// ======================================================
+constexpr RidOperatorIdType OPERATOR_ID_TYPE =
+    RidOperatorIdType::CAA_ASSIGNED;
+constexpr char OPERATOR_ID[] = "VN.OP2026840001";
+
 mavlink_message_t msg;
 mavlink_status_t status;
 
@@ -19,6 +33,7 @@ DroneStateV1 droneState;
 MavlinkAdapter mavlinkAdapter(droneState);
 RidLocationMapper ridLocationMapper;
 RidLocationEncoder ridLocationEncoder;
+RidOperatorIdEncoder ridOperatorIdEncoder;
 
 uint32_t lastDroneStatePrint = 0;
 
@@ -983,6 +998,57 @@ void printRidLocationEncoded()
     Serial.println("===========================");
 }
 
+void printRidOperatorIdEncoded()
+{
+    uint8_t packet[
+        RidOperatorIdEncoder::MESSAGE_SIZE
+    ];
+
+    if (!ridOperatorIdEncoder.encode(
+            OPERATOR_ID_TYPE,
+            OPERATOR_ID,
+            packet))
+    {
+        Serial.println();
+        Serial.println("RID OPERATOR ID: not encoded");
+        Serial.println(
+            "Configure a printable Operator ID (1-20 characters)."
+        );
+        return;
+    }
+
+    Serial.println();
+    Serial.println("===== RID OPERATOR ID (ASTM F3411-22a Table 12) =====");
+    Serial.print("Operator ID     : ");
+    Serial.println(OPERATOR_ID);
+    Serial.print("Operator Type   : ");
+    Serial.println(static_cast<uint8_t>(OPERATOR_ID_TYPE));
+
+    for (size_t i = 0;
+         i < RidOperatorIdEncoder::MESSAGE_SIZE;
+         ++i)
+    {
+        Serial.print("Byte ");
+
+        if (i < 10)
+        {
+            Serial.print(" ");
+        }
+
+        Serial.print(i);
+        Serial.print(" : 0x");
+
+        if (packet[i] < 0x10)
+        {
+            Serial.print("0");
+        }
+
+        Serial.println(packet[i], HEX);
+    }
+
+    Serial.println("=====================================================");
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -1091,5 +1157,6 @@ void loop()
     printDroneState();
     printRidLocationMapped();
     printRidLocationEncoded();
+    printRidOperatorIdEncoded();
 }
 }
