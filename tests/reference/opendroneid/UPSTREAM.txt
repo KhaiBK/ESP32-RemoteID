@@ -1,0 +1,4 @@
+Repository: https://github.com/opendroneid/opendroneid-core-c
+Commit: 849c03adbe0cdd68997a462fafab397edcfe53f3
+Files: libopendroneid/opendroneid.c, libopendroneid/opendroneid.h, LICENSE
+Unmodified upstream source; host-test reference only, not linked into firmware.

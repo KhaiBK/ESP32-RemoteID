@@ -1,6 +1,24 @@
 #include "MavlinkAdapter.h"
 #include <math.h>
 
+
+namespace
+{
+
+// Experimental firmware receive-timeout policies, not ASTM requirements.
+constexpr uint32_t HEARTBEAT_RX_TIMEOUT_MS = 3000;
+constexpr uint32_t EXTENDED_STATE_RX_TIMEOUT_MS = 3000;
+
+// Experimental receive-timeout policy for the measured 2 Hz GPI stream.
+// NOT a complete ASTM data-age/compliance check.
+constexpr uint32_t GPI_RX_TIMEOUT_MS = 1000;
+constexpr uint32_t GPS_RAW_RX_TIMEOUT_MS = 1000;
+constexpr uint32_t SCALED_PRESSURE_RX_TIMEOUT_MS = 1000;
+
+// Provisional firmware synchronization holdover policy, not an ASTM requirement.
+constexpr uint32_t SYSTEM_TIME_HOLDOVER_TIMEOUT_MS = 5000;
+} // namespace
+
 // ======================================================
 // Constructor
 // ======================================================
@@ -72,6 +90,17 @@ void MavlinkAdapter::handleHeartbeat(
         &heartbeat
     );
 
+    // Check continuity before recording this heartbeat's reception.
+    const bool heartbeatReceptionGap =
+        heartbeatReceived &&
+        static_cast<uint32_t>(
+            nowMs - lastHeartbeatRxMs
+        ) >= HEARTBEAT_RX_TIMEOUT_MS;
+
+    heartbeatReceived = true;
+    lastHeartbeatRxMs = nowMs;
+    state.statusUpdatedMs = nowMs;
+
    bool newArmedState =
     (heartbeat.base_mode &
      MAV_MODE_FLAG_SAFETY_ARMED) != 0;
@@ -101,6 +130,21 @@ if (!armedStateInitialized)
     updateOperationalStatus(nowMs);
     return;
 }
+
+    // Across a receive gap, synchronize the armed bit without inferring an
+    // ARM/DISARM transition or scheduling a mid-flight reference capture.
+    if (heartbeatReceptionGap)
+    {
+        takeoffReferencePending = false;
+
+        if (armed != newArmedState || !newArmedState)
+        {
+            takeoffReferenceValid = false;
+            state.heightValid = false;
+        }
+
+        armed = newArmedState;
+    }
 
 
 // ==================================================
@@ -148,6 +192,10 @@ void MavlinkAdapter::handleExtendedSysState(
         &ext
     );
 
+    extendedStateReceived = true;
+    lastExtendedStateRxMs = nowMs;
+    state.statusUpdatedMs = nowMs;
+
     // Store source state.
     // Final Remote ID operational status is decided
     // by updateOperationalStatus().
@@ -161,19 +209,31 @@ void MavlinkAdapter::updateOperationalStatus(
     uint32_t nowMs
 )
 {
+    const bool heartbeatRxFresh =
+        heartbeatReceived &&
+        static_cast<uint32_t>(
+            nowMs - lastHeartbeatRxMs
+        ) < HEARTBEAT_RX_TIMEOUT_MS;
+
+    const bool extendedStateRxFresh =
+        extendedStateReceived &&
+        static_cast<uint32_t>(
+            nowMs - lastExtendedStateRxMs
+        ) < EXTENDED_STATE_RX_TIMEOUT_MS;
+
     // --------------------------------------------------
     // Emergency reported by the flight controller
     // has priority over normal landed state.
     // --------------------------------------------------
 
-    if (fcEmergency)
+    if (heartbeatRxFresh && fcEmergency)
     {
         state.operationalStatus =
             RidOperationalStatus::EMERGENCY;
 
         state.operationalStatusValid = true;
     }
-    else
+    else if (heartbeatRxFresh && extendedStateRxFresh)
     {
         switch (landedState)
         {
@@ -208,7 +268,13 @@ void MavlinkAdapter::updateOperationalStatus(
         }
     }
 
-    state.statusUpdatedMs = nowMs;
+    else
+    {
+        state.operationalStatus =
+            RidOperationalStatus::UNDECLARED;
+
+        state.operationalStatusValid = false;
+    }
 }
 
 void MavlinkAdapter::handleGlobalPositionInt(
@@ -222,7 +288,10 @@ void MavlinkAdapter::handleGlobalPositionInt(
         &msg,
         &pos
     );
-
+    
+    // A GPI message from the selected source has been received.
+globalPositionReceived = true;
+lastGlobalPositionRxMs = nowMs;
     // ==================================================
     // 1. Latitude / Longitude
     // MAVLink:
@@ -430,6 +499,9 @@ void MavlinkAdapter::handleGpsRawInt(
         &gps
     );
 
+    gpsRawReceived = true;
+    lastGpsRawRxMs = nowMs;
+
 
     // ==================================================
     // Geodetic Altitude
@@ -561,7 +633,10 @@ void MavlinkAdapter::handleScaledPressure(
         &msg,
         &pressure
     );
+    
 
+    scaledPressureReceived = true;
+    lastScaledPressureRxMs = nowMs;
 
     // ==================================================
     // Pressure Altitude
@@ -570,10 +645,10 @@ void MavlinkAdapter::handleScaledPressure(
     //   absolute pressure, hPa
     //
     // ASTM / Remote ID pressure altitude:
-    //   referenced to standard pressure 1013.2 hPa
+    //   referenced to standard pressure 1013.25 hPa
     // ==================================================
 
-    constexpr float STANDARD_PRESSURE_HPA = 1013.2f;
+    constexpr float STANDARD_PRESSURE_HPA = 1013.25f;
 
     if (isfinite(pressure.press_abs) &&
         pressure.press_abs > 0.0f)
@@ -641,4 +716,80 @@ void MavlinkAdapter::handleSystemTime(
 
     state.timestampAccuracyS = 0.0f;
     state.timestampAccuracyValid = false;
+}
+
+void MavlinkAdapter::updateFreshness(uint32_t nowMs)
+{
+    // Re-evaluate both status sources even when no messages arrive.
+    updateOperationalStatus(nowMs);
+
+    // Expire UTC synchronization independently of telemetry receive freshness.
+    if (!timeSyncValid ||
+        static_cast<uint32_t>(
+            nowMs - timeSyncUpdatedMs
+        ) >= SYSTEM_TIME_HOLDOVER_TIMEOUT_MS)
+    {
+        timeSyncValid = false;
+        state.locationTimestampValid = false;
+        state.timestampAccuracyValid = false;
+    }
+
+    // ==================================================
+    // GLOBAL_POSITION_INT
+    // ==================================================
+
+    const bool gpiRxFresh =
+        globalPositionReceived &&
+        static_cast<uint32_t>(
+            nowMs - lastGlobalPositionRxMs
+        ) < GPI_RX_TIMEOUT_MS;
+
+    if (!gpiRxFresh)
+    {
+        state.positionValid = false;
+
+        state.horizontalSpeedValid = false;
+        state.trackDirectionValid = false;
+        state.verticalSpeedValid = false;
+
+        state.heightValid = false;
+
+        state.locationTimestampValid = false;
+        state.timestampAccuracyValid = false;
+    }
+
+
+    // ==================================================
+    // GPS_RAW_INT
+    // ==================================================
+
+    const bool gpsRawFresh =
+        gpsRawReceived &&
+        static_cast<uint32_t>(
+            nowMs - lastGpsRawRxMs
+        ) < GPS_RAW_RX_TIMEOUT_MS;
+
+    if (!gpsRawFresh)
+    {
+        state.geodeticAltitudeValid = false;
+
+        state.horizontalAccuracyValid = false;
+        state.verticalAccuracyValid = false;
+        state.speedAccuracyValid = false;
+    }
+
+    // ==================================================
+// SCALED_PRESSURE freshness
+// ==================================================
+
+const bool scaledPressureFresh =
+    scaledPressureReceived &&
+    static_cast<uint32_t>(
+        nowMs - lastScaledPressureRxMs
+    ) < SCALED_PRESSURE_RX_TIMEOUT_MS;
+
+if (!scaledPressureFresh)
+{
+    state.pressureAltitudeValid = false;
+}
 }

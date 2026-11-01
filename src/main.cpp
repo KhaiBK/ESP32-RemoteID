@@ -4,6 +4,37 @@
 #include "MavlinkAdapter.h"
 #include "RidLocationMapper.h"
 #include "RidLocationEncoder.h"
+#include "RidBasicIdConfig.h"
+#include "RidBasicIdEncoder.h"
+
+// BLE 4 legacy advertising; independent of TIMING_ONLY and packet diagnostics.
+#ifndef RID_BLE_LEGACY_ENABLED
+#define RID_BLE_LEGACY_ENABLED 1
+#endif
+#if RID_BLE_LEGACY_ENABLED
+#include "Esp32RidBleTransport.h"
+#endif
+
+// Verbose capture is opt-in so the UART/parser loop stays responsive.
+#ifndef RID_BLE_VERBOSE_DIAGNOSTIC
+#define RID_BLE_VERBOSE_DIAGNOSTIC 0
+#endif
+#ifndef RID_BLE_PACKET_DIAGNOSTIC
+#define RID_BLE_PACKET_DIAGNOSTIC 0
+#endif
+#ifndef RID_MAVLINK_VERBOSE_DIAGNOSTIC
+#define RID_MAVLINK_VERBOSE_DIAGNOSTIC 0
+#endif
+
+// Temporary packet capture diagnostic; independent of TIMING_ONLY.
+#ifndef RID_LOCATION_PACKET_DIAGNOSTIC
+#define RID_LOCATION_PACKET_DIAGNOSTIC 0
+#endif
+
+// Independent Basic ID diagnostic; does not enable any broadcast transport.
+#ifndef RID_BASIC_ID_PACKET_DIAGNOSTIC
+#define RID_BASIC_ID_PACKET_DIAGNOSTIC 0
+#endif
 
 
 HardwareSerial FCSerial(2);
@@ -33,6 +64,177 @@ uint32_t lastVfrPrint = 0;
 uint32_t lastSysPrint = 0;
 uint32_t lastReport = 0;
 
+
+namespace
+{
+
+#if RID_BLE_LEGACY_ENABLED
+void reportRidBle(const RidBleDiagnostic& diagnostic);
+Esp32RidBleTransport ridBleTransport;
+RidLocationAgeMonitor ridLocationAgeMonitor;
+RidBleBroadcaster ridBleBroadcaster(ridBleTransport, RidBasicIdConfig::identity(), reportRidBle);
+uint32_t lastRidBleSummaryMs = 0;
+bool ridBleInitReported = false;
+int32_t ridBleInitStatus = 0;
+
+void printRidBleSummary(const RidBleDiagnostic& d)
+{
+    char receiveAge[16] = "UNKNOWN", timestampAge[16] = "UNKNOWN";
+    if (d.locationAge.receiveAgeAvailable)
+        snprintf(receiveAge, sizeof(receiveAge), "%lu", static_cast<unsigned long>(d.locationAge.receiveAgeMs));
+    if (d.locationAge.timestampAgeAvailable)
+        snprintf(timestampAge, sizeof(timestampAge), "%lu", static_cast<unsigned long>(d.locationAge.timestampAgeEstimateMs));
+    Serial.printf("[RID BLE] init=%s step=%s status=0x%08lX healthy=%s active=%s msg=%s counter=%u len=%u t=%lu updateGap_ms=%lu restartGap_ms=%lu(%s) maxGap_ms=%lu switch_ms=%lu ok=%lu failed=%lu\n",
+                  ridBleInitReported ? (ridBleInitStatus == 0 ? "OK" : "FAILED") : "NOT_CALLED",
+                  ridBleTransport.initializationStep(), static_cast<unsigned long>(ridBleInitStatus),
+                  ridBleBroadcaster.healthy() ? "YES" : "NO",
+                  d.advertisingActive ? "YES" : "NO", RidBleBroadcaster::messageName(d.messageType),
+                  static_cast<unsigned int>(d.counter), static_cast<unsigned int>(d.payloadLength),
+                  static_cast<unsigned long>(d.nowMs), static_cast<unsigned long>(d.gapMs),
+                  static_cast<unsigned long>(d.restartGapMs), d.restartGapAvailable ? "GAP callbacks" : "unavailable",
+                  static_cast<unsigned long>(d.maxRestartGapMs), static_cast<unsigned long>(d.switchLatencyMs),
+                  static_cast<unsigned long>(d.successfulUpdates), static_cast<unsigned long>(d.failedUpdates));
+    Serial.printf("[RID AGE] rx_ms=%s timestampEstimate_ms=%s sampleAge=UNVERIFIED prepared_ms=%lu advertised_ms=%lu callbackDelay_ms=%lu guard=%s clock=%s BUR0030=OPEN\n",
+                  receiveAge, timestampAge, static_cast<unsigned long>(d.preparedAgeMs),
+                  static_cast<unsigned long>(d.advertisingAgeMs), static_cast<unsigned long>(d.callbackDelayMs),
+                  d.locationAge.gpiSuppressed ? "BLOCKED" : "PASS/UNVERIFIED",
+                  d.locationAge.clockAmbiguous ? "AMBIGUOUS" : "no detected ambiguity");
+}
+
+void reportRidBle(const RidBleDiagnostic& d)
+{
+    switch (d.kind)
+    {
+        case RidBleDiagnosticKind::INITIALIZATION:
+        {
+            ridBleInitReported = true;
+            ridBleInitStatus = d.status;
+            Serial.printf("[RID BLE] init=%s step=%s status=0x%08lX (%s)\n",
+                          d.status == 0 ? "OK" : "FAILED", ridBleTransport.initializationStep(),
+                          static_cast<unsigned long>(d.status), esp_err_to_name(d.status));
+            if (d.status == 0)
+            {
+                const uint8_t* address = ridBleTransport.publicAddress();
+                Serial.printf("[RID BLE] public address=%02X:%02X:%02X:%02X:%02X:%02X legacy ADV_NONCONN_IND LE1M channels=37,38,39 interval=100ms\n",
+                              address[0], address[1], address[2], address[3], address[4], address[5]);
+            }
+            break;
+        }
+        case RidBleDiagnosticKind::ADVERTISING:
+#if RID_BLE_VERBOSE_DIAGNOSTIC
+            printRidBleSummary(d);
+#endif
+#if RID_BLE_PACKET_DIAGNOSTIC
+        {
+            const uint8_t* bytes = ridBleBroadcaster.currentAdvertisingData();
+            constexpr char HEX[] = "0123456789ABCDEF";
+            char line[3 * RidBleLegacyFrame::ADVERTISING_SIZE];
+            for (size_t i = 0; i < RidBleLegacyFrame::ADVERTISING_SIZE; ++i)
+            {
+                line[3 * i] = HEX[bytes[i] >> 4];
+                line[3 * i + 1] = HEX[bytes[i] & 15];
+                line[3 * i + 2] = i + 1 == RidBleLegacyFrame::ADVERTISING_SIZE ? '\0' : ' ';
+            }
+            Serial.printf("[RID BLE AD31] msg=%s counter=%u\n", RidBleBroadcaster::messageName(d.messageType),
+                          static_cast<unsigned int>(d.counter));
+            Serial.println(line);
+        }
+#endif
+            break;
+        case RidBleDiagnosticKind::BASIC_ID_REJECTED:
+            Serial.printf("[RID BLE] Basic ID suppressed: %s; Location only\n",
+                          RidBasicIdEncoder::resultName(static_cast<RidBasicIdEncodeResult>(d.status)));
+            break;
+        case RidBleDiagnosticKind::ERROR:
+            Serial.printf("[RID BLE] ERROR operation=%s status=%ld (0x%08lX); updates halted, stop requested, reset required\n",
+                          RidBleBroadcaster::operationName(d.operation), static_cast<long>(d.status),
+                          static_cast<unsigned long>(d.status));
+            break;
+        case RidBleDiagnosticKind::DEADLINE_MISSED:
+            Serial.printf("[RID BLE] WARNING %s update gap=%lums\n",
+                          RidBleBroadcaster::messageName(d.messageType), static_cast<unsigned long>(d.gapMs));
+            break;
+        case RidBleDiagnosticKind::LOCATION_AGE_CHANGED:
+            Serial.printf("[RID BLE] Location timestamp guard=%s stale=%s clockAmbiguous=%s; BUR0030=OPEN\n",
+                          d.locationAge.gpiSuppressed ? "BLOCKED" : "RELEASED",
+                          d.locationAge.timestampStale ? "YES" : "NO", d.locationAge.clockAmbiguous ? "YES" : "NO");
+            break;
+    }
+}
+#endif
+
+// Source selected for this measurement.
+// These IDs match the FC shown in your current logs.
+constexpr uint8_t TIMING_FC_SYSID = 1;
+constexpr uint8_t TIMING_FC_COMPID = 1;
+
+// Print one summary every 5 seconds.
+// This is a diagnostic reporting period, NOT a freshness timeout.
+constexpr uint32_t TIMING_REPORT_PERIOD_MS = 5000;
+
+// Temporarily disable verbose telemetry prints during measurement.
+constexpr bool TIMING_ONLY = true;
+constexpr uint32_t GPS_RAW_DEBUG_PERIOD_MS = 1000;
+uint32_t lastGpsRawFreshnessPrintMs = 0;
+
+struct MavlinkRxStats
+{
+    const char* name;
+    uint32_t messageId;
+
+    bool seen = false;
+
+    uint32_t count = 0;
+
+    // Local M5 time when parsing of the message completed.
+    uint32_t lastRxMs = 0;
+
+    uint32_t lastIntervalMs = 0;
+    uint32_t maxIntervalMs = 0;
+
+    uint64_t intervalSumMs = 0;
+
+    MavlinkRxStats(
+        const char* messageName,
+        uint32_t id
+    )
+        : name(messageName),
+          messageId(id)
+    {
+    }
+};
+
+
+MavlinkRxStats mavlinkRxStats[] =
+{
+    {"HEARTBEAT",           MAVLINK_MSG_ID_HEARTBEAT},
+    {"EXTENDED_SYS_STATE",  MAVLINK_MSG_ID_EXTENDED_SYS_STATE},
+    {"GLOBAL_POSITION_INT", MAVLINK_MSG_ID_GLOBAL_POSITION_INT},
+    {"GPS_RAW_INT",         MAVLINK_MSG_ID_GPS_RAW_INT},
+    {"SCALED_PRESSURE",     MAVLINK_MSG_ID_SCALED_PRESSURE},
+    {"SYSTEM_TIME",         MAVLINK_MSG_ID_SYSTEM_TIME}
+};
+
+
+uint32_t lastTimingReportMs = 0;
+// Diagnostic printing period, NOT the receive timeout.
+constexpr uint32_t GPI_DEBUG_PERIOD_MS = 1000;
+
+uint32_t lastGpiFreshnessPrintMs = 0;
+
+#if RID_LOCATION_PACKET_DIAGNOSTIC
+constexpr uint32_t RID_LOCATION_PACKET_PERIOD_MS = 1000;
+uint32_t lastRidLocationPacketPrintMs = 0;
+#endif
+
+#if RID_BASIC_ID_PACKET_DIAGNOSTIC
+const RidBasicIdV1 basicIdIdentity = RidBasicIdConfig::identity();
+RidBasicIdEncoder ridBasicIdEncoder;
+constexpr uint32_t RID_BASIC_ID_PACKET_PERIOD_MS = 1000;
+uint32_t lastRidBasicIdPacketPrintMs = 0;
+#endif
+
+} // namespace
 
 // ======================================================
 // HEARTBEAT
@@ -432,9 +634,7 @@ void handleSystemTimeDebug(
     Serial.println("=======================");
 }
 
-// ======================================================
-// SETUP
-// ======================================================
+
 void printDroneState()
 {
     Serial.println();
@@ -983,11 +1183,364 @@ void printRidLocationEncoded()
     Serial.println("===========================");
 }
 
+#if RID_LOCATION_PACKET_DIAGNOSTIC
+// Print the actual mapper/encoder output after the loop's freshness updates.
+void printRidLocationPacketDiagnostic(uint32_t nowMs)
+{
+    static_assert(RidLocationEncoder::MESSAGE_SIZE == 25, "Diagnostic expects 25 bytes");
+    const RidLocationMapped mapped = ridLocationMapper.map(droneState);
+    uint8_t packet[RidLocationEncoder::MESSAGE_SIZE];
+    ridLocationEncoder.encode(mapped, packet);
+
+    Serial.printf(
+        "RID_LOCATION ms=%lu STATUS=%s CODE=%u POS=%s HEIGHT=%s TS=%u\n",
+        static_cast<unsigned long>(nowMs),
+        droneState.operationalStatusValid ? "YES" : "NO",
+        static_cast<unsigned int>(mapped.operationalStatusCode),
+        mapped.positionValid ? "YES" : "NO",
+        mapped.heightCode != 0 ? "YES" : "NO",
+        static_cast<unsigned int>(mapped.timestampCode)
+    );
+
+    constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+    char hexLine[3 * RidLocationEncoder::MESSAGE_SIZE];
+    for (size_t i = 0; i < RidLocationEncoder::MESSAGE_SIZE; ++i)
+    {
+        hexLine[3 * i] = HEX_DIGITS[packet[i] >> 4];
+        hexLine[3 * i + 1] = HEX_DIGITS[packet[i] & 0x0F];
+        hexLine[3 * i + 2] =
+            i + 1 == RidLocationEncoder::MESSAGE_SIZE ? '\0' : ' ';
+    }
+    Serial.println(hexLine);
+}
+#endif
+
+#if RID_BASIC_ID_PACKET_DIAGNOSTIC
+void printRidBasicIdPacketDiagnostic(uint32_t nowMs)
+{
+    static_assert(RidBasicIdEncoder::MESSAGE_SIZE == 25, "Basic ID diagnostic expects 25 bytes");
+    uint8_t packet[RidBasicIdEncoder::MESSAGE_SIZE];
+    const RidBasicIdEncodeResult result = ridBasicIdEncoder.encode(
+        basicIdIdentity, packet, sizeof(packet)
+    );
+    if (result != RidBasicIdEncodeResult::SUCCESS)
+    {
+        Serial.printf(
+            "RID_BASIC_ID ms=%lu NOT_AVAILABLE %s; configure include/RidBasicIdConfig.h\n",
+            static_cast<unsigned long>(nowMs),
+            RidBasicIdEncoder::resultName(result)
+        );
+        return;
+    }
+
+    Serial.printf(
+        "RID_BASIC_ID ms=%lu ID_TYPE=%u UA_TYPE=%u ID=%s\n",
+        static_cast<unsigned long>(nowMs),
+        static_cast<unsigned int>(basicIdIdentity.idType),
+        static_cast<unsigned int>(basicIdIdentity.uaType),
+        basicIdIdentity.uasId
+    );
+    constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+    char hexLine[3 * RidBasicIdEncoder::MESSAGE_SIZE];
+    for (size_t i = 0; i < RidBasicIdEncoder::MESSAGE_SIZE; ++i)
+    {
+        hexLine[3 * i] = HEX_DIGITS[packet[i] >> 4];
+        hexLine[3 * i + 1] = HEX_DIGITS[packet[i] & 0x0F];
+        hexLine[3 * i + 2] =
+            i + 1 == RidBasicIdEncoder::MESSAGE_SIZE ? '\0' : ' ';
+    }
+    Serial.println(hexLine);
+}
+#endif
+
+//========================================
+//FRESHNESS
+//=======================================
+
+void recordMavlinkTiming(
+    const mavlink_message_t& message,
+    uint32_t nowMs
+)
+{
+    // Only measure messages from the selected FC.
+    if (message.sysid != TIMING_FC_SYSID ||
+        message.compid != TIMING_FC_COMPID)
+    {
+        return;
+    }
+
+    for (auto& s : mavlinkRxStats)
+    {
+        if (message.msgid != s.messageId)
+        {
+            continue;
+        }
+
+        if (s.seen)
+        {
+            // Unsigned subtraction handles millis() rollover
+            // for the short measurement intervals used here.
+            const uint32_t dtMs =
+                static_cast<uint32_t>(
+                    nowMs - s.lastRxMs
+                );
+
+            s.lastIntervalMs = dtMs;
+            s.intervalSumMs += dtMs;
+
+            if (dtMs > s.maxIntervalMs)
+            {
+                s.maxIntervalMs = dtMs;
+            }
+        }
+
+        s.seen = true;
+        ++s.count;
+        s.lastRxMs = nowMs;
+
+        return;
+    }
+}
+
+void printMavlinkTiming(uint32_t nowMs)
+{
+    Serial.println();
+    Serial.println("======= MAVLINK RX TIMING =======");
+
+    Serial.println(
+        "Message                Count  Last_ms    Avg_ms   Max_ms RxAge_ms"
+    );
+
+    for (const auto& s : mavlinkRxStats)
+    {
+        if (!s.seen)
+        {
+            Serial.printf(
+                "%-21s NOT RECEIVED\n",
+                s.name
+            );
+
+            continue;
+        }
+
+        const uint32_t rxAgeMs =
+            static_cast<uint32_t>(
+                nowMs - s.lastRxMs
+            );
+
+        // One message is not enough to calculate an interval.
+        if (s.count < 2)
+        {
+            Serial.printf(
+                "%-21s %6lu %8s %9s %8s %8lu\n",
+                s.name,
+                static_cast<unsigned long>(s.count),
+                "-",
+                "-",
+                "-",
+                static_cast<unsigned long>(rxAgeMs)
+            );
+
+            continue;
+        }
+
+        const double avgMs =
+            static_cast<double>(s.intervalSumMs) /
+            static_cast<double>(s.count - 1U);
+
+        Serial.printf(
+            "%-21s %6lu %8lu %9.1f %8lu %8lu\n",
+            s.name,
+            static_cast<unsigned long>(s.count),
+            static_cast<unsigned long>(s.lastIntervalMs),
+            avgMs,
+            static_cast<unsigned long>(s.maxIntervalMs),
+            static_cast<unsigned long>(rxAgeMs)
+        );
+    }
+
+    Serial.println("=================================");
+}
+
+
+void printGpiFreshness(uint32_t nowMs)
+{
+    // Find the existing GPI receive statistics.
+    const MavlinkRxStats* gpiStats = nullptr;
+
+    for (const auto& s : mavlinkRxStats)
+    {
+        if (s.messageId == MAVLINK_MSG_ID_GLOBAL_POSITION_INT)
+        {
+            gpiStats = &s;
+            break;
+        }
+    }
+
+    // Map once for this diagnostic report.
+    // This function does not change DroneState.
+    const RidLocationMapped mapped =
+        ridLocationMapper.map(droneState);
+
+    Serial.println();
+    Serial.println("======= GPI FRESHNESS TEST =======");
+
+    if (gpiStats != nullptr && gpiStats->seen)
+    {
+        const uint32_t rxAgeMs =
+            static_cast<uint32_t>(
+                nowMs - gpiStats->lastRxMs
+            );
+
+        Serial.printf(
+            "GPI count=%lu | RxAge_ms=%lu\n",
+            static_cast<unsigned long>(gpiStats->count),
+            static_cast<unsigned long>(rxAgeMs)
+        );
+    }
+    else
+    {
+        Serial.println(
+            "GPI: NOT RECEIVED | RxAge_ms=N/A"
+        );
+    }
+
+    // Validity of data currently derived from GPI.
+    Serial.printf(
+        "Valid: POS=%s HSPD=%s TRACK=%s VSPD=%s\n",
+        droneState.positionValid ? "YES" : "NO",
+        droneState.horizontalSpeedValid ? "YES" : "NO",
+        droneState.trackDirectionValid ? "YES" : "NO",
+        droneState.verticalSpeedValid ? "YES" : "NO"
+    );
+
+    Serial.printf(
+        "Valid: HEIGHT=%s TIMESTAMP=%s\n",
+        droneState.heightValid ? "YES" : "NO",
+        droneState.locationTimestampValid ? "YES" : "NO"
+    );
+
+    // These sources are not invalidated by the GPI timeout.
+    Serial.printf(
+        "Other valid: HAE=%s PRESSURE=%s STATUS=%s\n",
+        droneState.geodeticAltitudeValid ? "YES" : "NO",
+        droneState.pressureAltitudeValid ? "YES" : "NO",
+        droneState.operationalStatusValid ? "YES" : "NO"
+    );
+
+    // Inspect the mapper's output after freshness checking.
+    Serial.printf(
+        "Mapped: LAT=%ld LON=%ld VSPD=%d HEIGHT=%u TS=%u\n",
+        static_cast<long>(mapped.latitudeCode),
+        static_cast<long>(mapped.longitudeCode),
+        static_cast<int>(mapped.verticalSpeedCode),
+        static_cast<unsigned int>(mapped.heightCode),
+        static_cast<unsigned int>(mapped.timestampCode)
+    );
+
+    Serial.printf(
+        "Direction: EW=%u CODE=%u | HSpeed: MULT=%u CODE=%u\n",
+        static_cast<unsigned int>(mapped.ewDirectionSegmentBit),
+        static_cast<unsigned int>(mapped.trackDirectionCode),
+        static_cast<unsigned int>(mapped.speedMultiplierBit),
+        static_cast<unsigned int>(mapped.horizontalSpeedCode)
+    );
+
+    Serial.print("Operational Status Code: ");
+    Serial.println(
+    static_cast<uint8_t>(droneState.operationalStatus)
+);
+
+    Serial.println("=================================");
+}
+
+void printGpsRawFreshness(uint32_t nowMs)
+{
+    const MavlinkRxStats* gpsStats = nullptr;
+
+    for (const auto& s : mavlinkRxStats)
+    {
+        if (s.messageId == MAVLINK_MSG_ID_GPS_RAW_INT)
+        {
+            gpsStats = &s;
+            break;
+        }
+    }
+
+    RidLocationMapped mapped =
+        ridLocationMapper.map(droneState);
+
+    Serial.println();
+    Serial.println("======= GPS_RAW FRESHNESS TEST =======");
+
+    if (gpsStats != nullptr && gpsStats->seen)
+    {
+        const uint32_t rxAgeMs =
+            static_cast<uint32_t>(
+                nowMs - gpsStats->lastRxMs
+            );
+
+        Serial.printf(
+            "GPS_RAW count=%lu | RxAge_ms=%lu\n",
+            static_cast<unsigned long>(gpsStats->count),
+            static_cast<unsigned long>(rxAgeMs)
+        );
+    }
+    else
+    {
+        Serial.println(
+            "GPS_RAW: NOT RECEIVED | RxAge_ms=N/A"
+        );
+    }
+
+    Serial.printf(
+        "Valid: HAE=%s HACC=%s VACC=%s SACC=%s\n",
+        droneState.geodeticAltitudeValid ? "YES" : "NO",
+        droneState.horizontalAccuracyValid ? "YES" : "NO",
+        droneState.verticalAccuracyValid ? "YES" : "NO",
+        droneState.speedAccuracyValid ? "YES" : "NO"
+    );
+
+    Serial.printf(
+        "Other valid: POS=%s PRESSURE=%s STATUS=%s\n",
+        droneState.positionValid ? "YES" : "NO",
+        droneState.pressureAltitudeValid ? "YES" : "NO",
+        droneState.operationalStatusValid ? "YES" : "NO"
+    );
+
+    Serial.printf(
+        "Mapped: HAE=%u HACC=%u VACC=%u SACC=%u\n",
+        static_cast<unsigned int>(
+            mapped.geodeticAltitudeCode
+        ),
+        static_cast<unsigned int>(
+            mapped.horizontalAccuracyCode
+        ),
+        static_cast<unsigned int>(
+            mapped.verticalAccuracyCode
+        ),
+        static_cast<unsigned int>(
+            mapped.speedAccuracyCode
+        )
+    );
+
+    Serial.println("======================================");
+}
+
+//========================================
+//VOID_SETUP
+//========================================
+
 void setup()
 {
     Serial.begin(115200);
 
     delay(2000);
+
+#if RID_BLE_LEGACY_ENABLED
+    // Initialize once before opening UART; runtime GAP operations never wait.
+    ridBleBroadcaster.begin(millis());
+#endif
 
     FCSerial.begin(
         115200,
@@ -1025,10 +1578,27 @@ void loop()
                 &msg,
                 &status))
         {   
-            mavlinkAdapter.handleMessage(msg, millis());
+            const uint32_t rxNowMs = millis();
+
+// This function already filters the selected FC.
+recordMavlinkTiming(msg, rxNowMs);
+
+// Use the same selected source for DroneState updates.
+if (msg.sysid == TIMING_FC_SYSID &&
+    msg.compid == TIMING_FC_COMPID)
+{
+    mavlinkAdapter.handleMessage(msg, rxNowMs);
+#if RID_BLE_LEGACY_ENABLED
+    // Observe timestamp fields without altering adapter/state production policy.
+    if (msg.msgid == MAVLINK_MSG_ID_SYSTEM_TIME)
+        ridLocationAgeMonitor.observeSystemTime(mavlink_msg_system_time_get_time_boot_ms(&msg), rxNowMs);
+    else if (msg.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT)
+        ridLocationAgeMonitor.observePosition(mavlink_msg_global_position_int_get_time_boot_ms(&msg), rxNowMs);
+#endif
+}
 
             messageCount++;
-
+         if(!TIMING_ONLY){
             switch (msg.msgid)
             {
                 case MAVLINK_MSG_ID_HEARTBEAT:
@@ -1066,9 +1636,63 @@ void loop()
                 default:
                     break;
             }
-        }
+         }
     }
+}
 
+
+    // Check timeouts on every loop, even when UART receives nothing.
+const uint32_t freshnessNowMs = millis();
+
+// Always check freshness, even when no UART data arrives.
+mavlinkAdapter.updateFreshness(freshnessNowMs);
+#if RID_BLE_LEGACY_ENABLED
+ridBleBroadcaster.update(freshnessNowMs, droneState, ridLocationAgeMonitor.snapshot(freshnessNowMs));
+if (static_cast<uint32_t>(freshnessNowMs - lastRidBleSummaryMs) >= 5000)
+{
+    lastRidBleSummaryMs = freshnessNowMs;
+    printRidBleSummary(ridBleBroadcaster.diagnostics(freshnessNowMs));
+}
+#endif
+#if RID_LOCATION_PACKET_DIAGNOSTIC
+if (static_cast<uint32_t>(
+        freshnessNowMs - lastRidLocationPacketPrintMs
+    ) >= RID_LOCATION_PACKET_PERIOD_MS)
+{
+    lastRidLocationPacketPrintMs = freshnessNowMs;
+    printRidLocationPacketDiagnostic(freshnessNowMs);
+}
+#endif
+
+#if RID_BASIC_ID_PACKET_DIAGNOSTIC
+if (static_cast<uint32_t>(
+        freshnessNowMs - lastRidBasicIdPacketPrintMs
+    ) >= RID_BASIC_ID_PACKET_PERIOD_MS)
+{
+    lastRidBasicIdPacketPrintMs = freshnessNowMs;
+    printRidBasicIdPacketDiagnostic(freshnessNowMs);
+}
+#endif
+
+#if RID_MAVLINK_VERBOSE_DIAGNOSTIC
+if (static_cast<uint32_t>(
+        freshnessNowMs - lastGpsRawFreshnessPrintMs
+    ) >= GPS_RAW_DEBUG_PERIOD_MS)
+{
+    lastGpsRawFreshnessPrintMs = freshnessNowMs;
+
+    printGpsRawFreshness(freshnessNowMs);
+}
+
+// Print a short report once per second.
+if (static_cast<uint32_t>(
+        freshnessNowMs - lastGpiFreshnessPrintMs
+    ) >= GPI_DEBUG_PERIOD_MS)
+{
+    lastGpiFreshnessPrintMs = freshnessNowMs;
+
+    printGpiFreshness(freshnessNowMs);
+}
     // Bao cao parser moi 5 giay
     if (millis() - lastReport >= 5000)
     {
@@ -1085,11 +1709,25 @@ void loop()
 
         Serial.println("------------------------");
     }
-     if (millis() - lastDroneStatePrint >= 1000)
+     if (!TIMING_ONLY &&
+    millis() - lastDroneStatePrint >= 1000)
 {
     lastDroneStatePrint = millis();
+
     printDroneState();
     printRidLocationMapped();
     printRidLocationEncoded();
 }
+
+const uint32_t reportNowMs = millis();
+
+if (static_cast<uint32_t>(
+        reportNowMs - lastTimingReportMs
+    ) >= TIMING_REPORT_PERIOD_MS)
+{
+    lastTimingReportMs = reportNowMs;
+
+    printMavlinkTiming(reportNowMs);
+}
+#endif
 }

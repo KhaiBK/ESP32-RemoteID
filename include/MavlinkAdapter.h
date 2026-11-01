@@ -19,10 +19,30 @@ public:
         uint32_t nowMs
     );
 
+    // Periodic check, called even when no MAVLink message arrives.
+// First implementation: GLOBAL_POSITION_INT receive timeout.
+void updateFreshness(uint32_t nowMs);
 
 private:
 
     DroneStateV1& state;
+
+    // Independent reception tracking for Operational Status sources.
+    bool heartbeatReceived = false;
+    uint32_t lastHeartbeatRxMs = 0;
+    bool extendedStateReceived = false;
+    uint32_t lastExtendedStateRxMs = 0;
+
+    // GLOBAL_POSITION_INT receive tracking.
+// These describe message reception, not sensor-data age.
+bool globalPositionReceived = false;
+uint32_t lastGlobalPositionRxMs = 0;
+bool gpsRawReceived = false;
+uint32_t lastGpsRawRxMs = 0;
+bool scaledPressureReceived = false;
+uint32_t lastScaledPressureRxMs = 0;
+
+
     
     // --------------------------------------------------
 // ARM / Takeoff reference state

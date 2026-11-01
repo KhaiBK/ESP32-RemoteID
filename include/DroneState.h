@@ -84,7 +84,7 @@ struct DroneStateV1
     // --------------------------------------------------
 
     // Pressure altitude
-    // Reference pressure: 1013.2 hPa
+    // Reference pressure: 1013.25 hPa
     // Unit: m
     float pressureAltitudeM = 0.0f;
 

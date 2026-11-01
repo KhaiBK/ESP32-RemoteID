@@ -144,7 +144,7 @@ uint8_t mapTimestampAccuracy(float accuracyS)
     for (uint8_t code = 1; code <= 15; ++code)
     {
         float threshold =
-            static_cast<float>(code) * 0.1f;
+            static_cast<float>(code) / 10.0f;
 
         if (accuracyS <= threshold)
         {
@@ -281,17 +281,12 @@ if (state.trackDirectionValid &&
     isfinite(state.trackDirectionDeg))
 {
     float direction =
-        state.trackDirectionDeg;
+        fmodf(state.trackDirectionDeg, 360.0f);
 
-    // Normalize into [0, 360)
-    while (direction < 0.0f)
+    // Normalize in bounded time, including very large finite inputs.
+    if (direction < 0.0f)
     {
         direction += 360.0f;
-    }
-
-    while (direction >= 360.0f)
-    {
-        direction -= 360.0f;
     }
 
 
