@@ -352,9 +352,9 @@ void updateTakeoffSnapshot()
 // Build Remote ID System Source
 // ===========================================================================================================
 
-RidSystemSourceV1 buildRidSystemSource()
+RidSystemSource buildRidSystemSource()
 {
-    RidSystemSourceV1 source;
+    RidSystemSource source;
 
 
     // ==================================================
@@ -455,7 +455,7 @@ RidSystemSourceV1 buildRidSystemSource()
 
 void printRidSystemMapped()
 {
-    RidSystemSourceV1 source =
+    RidSystemSource source =
         buildRidSystemSource();
 
 
@@ -608,7 +608,7 @@ void printRidSystemMapped()
 
 void printRidSystemEncoded()
 {
-    RidSystemSourceV1 source =
+    RidSystemSource source =
         buildRidSystemSource();
 
 
