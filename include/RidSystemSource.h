@@ -47,7 +47,7 @@ enum class RidClassificationType : uint8_t
 // They have NOT yet been converted into ASTM encoded codes.
 // ============================================================
 
-struct RidSystemSourceV1
+struct RidSystemSource
 {
     // ========================================================
     // Operator location source
@@ -144,23 +144,3 @@ struct RidSystemSourceV1
     uint64_t timestampUtcUs = 0;
 };
 
-/////////////////////// Self Id Source ///////////////////////////////////////////////////////////////////////////////////////
-
-enum class RidSelfIdDescriptionType : uint8_t
-{
-    TEXT            = 0,
-    EMERGENCY       = 1,
-    EXTENDED_STATUS = 2
-};
-
-
-struct RidSelfIdSource
-{
-    bool valid = false;
-
-    RidSelfIdDescriptionType descriptionType =
-        RidSelfIdDescriptionType::TEXT;
-
-    // 23 chars + terminating NULL for local use.
-    char description[24] = {};
-};

@@ -2,7 +2,6 @@
 
 #include "DroneState.h"
 #include "RidLocationMapped.h"
-#include "RidSystemSourceV1.h"
 
 class RidLocationMapper
 {
@@ -16,24 +15,3 @@ public:
     ) const;
 };
 
-///////////////////////////// SYSTEM /////////////////////////////////////////////////////////////////////////////////////
-
-class RidSystemMapper
-{
-public:
-
-    RidSystemMapped map(
-        const RidSystemSourceV1& source
-    ) const;
-};
-
-///////////////////////////// Self Id /////////////////////////////////////////////////////////////////////////////////////
-
-class RidSelfIdMapper
-{
-public:
-
-    RidSelfIdMapped map(
-        const RidSelfIdSource& source
-    ) const;
-};

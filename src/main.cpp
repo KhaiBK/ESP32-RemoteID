@@ -4,8 +4,12 @@
 #include "MavlinkAdapter.h"
 #include "RidLocationMapper.h"
 #include "RidLocationEncoder.h"
+#include "RidSystemMapper.h"
+#include "RidSystemEncoder.h"
 #include "RidBasicIdConfig.h"
 #include "RidBasicIdEncoder.h"
+#include "RidSelfId.h"
+#include "RidSelfIdEncoder.h"
 
 // BLE 4 legacy advertising; independent of TIMING_ONLY and packet diagnostics.
 #ifndef RID_BLE_LEGACY_ENABLED
@@ -55,10 +59,8 @@ RidLocationEncoder ridLocationEncoder;
 RidSystemMapper ridSystemMapper;
 RidSystemEncoder ridSystemEncoder;
 
-RidSelfIdMapper ridSelfIdMapper;
+RidSelfId selfId;
 RidSelfIdEncoder ridSelfIdEncoder;
-
-RidSelfIdSource selfIdSource;
 //////////////////////////////////////////
 
 uint32_t lastDroneStatePrint = 0;
@@ -671,58 +673,45 @@ void printRidSystemEncoded()
 }
 
 // ============================================================================================================
-// Print Remote ID Self ID Mapped
+// Print Remote ID Self ID
 // ============================================================================================================
 
-void printRidSelfIdMapped()
+void printRidSelfId()
 {
-    RidSelfIdMapped rid =
-        ridSelfIdMapper.map(
-            selfIdSource
-        );
-
-
     Serial.println();
     Serial.println(
-        "======= SELF ID MAPPED ======="
+        "======= SELF ID SOURCE ======="
     );
 
 
     Serial.print(
-        "Valid              : "
+        "Valid            : "
     );
 
     Serial.println(
-        rid.valid
+        selfId.valid
             ? "YES"
             : "NO"
     );
 
 
     Serial.print(
-        "Description Type   : "
+        "Description Type : "
     );
 
     Serial.println(
-        rid.descriptionTypeCode
-    );
-
-
-    char description[24] = {};
-
-    memcpy(
-        description,
-        rid.description,
-        23
+        static_cast<uint8_t>(
+            selfId.descriptionType
+        )
     );
 
 
     Serial.print(
-        "Description        : "
+        "Description      : "
     );
 
     Serial.println(
-        description
+        selfId.description
     );
 
 
@@ -737,12 +726,6 @@ void printRidSelfIdMapped()
 
 void printRidSelfIdEncoded()
 {
-    RidSelfIdMapped mapped =
-        ridSelfIdMapper.map(
-            selfIdSource
-        );
-
-
     uint8_t packet[
         RidSelfIdEncoder::MESSAGE_SIZE
     ] = {};
@@ -750,7 +733,7 @@ void printRidSelfIdEncoded()
 
     bool encoded =
         ridSelfIdEncoder.encode(
-            mapped,
+            selfId,
             packet
         );
 
@@ -805,12 +788,6 @@ void printRidSelfIdEncoded()
 
     Serial.println(
         "==============================="
-    );
-
-
-    verifyRidSelfId(
-        mapped,
-        packet
     );
 }
 
@@ -2127,6 +2104,22 @@ void setup()
         FC_TX
     );
 
+    // ==================================================
+    // SELF ID CONFIG
+    // ==================================================
+
+    selfId.valid = true;
+
+    selfId.descriptionType =
+        RidSelfIdDescriptionType::TEXT;
+
+    strncpy(
+        selfId.description,
+        "Self ID test",
+        sizeof(selfId.description) - 1
+    );
+
+
     Serial.println();
     Serial.println("====================================");
     Serial.println(" M5Stick MAVLink MULTI MSG TEST");
@@ -2302,8 +2295,8 @@ if (static_cast<uint32_t>(
     printRidSystemEncoded();
 
     Serial.print("=============================SELF ID MSG============================");
-    printRidOperatorIdMapped();
-     printRidOperatorIdEncoded();
+    printRidSelfId();
+    printRidSelfIdEncoded();
 
 }
 
