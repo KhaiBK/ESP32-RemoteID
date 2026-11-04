@@ -14,3 +14,4 @@ public:
         const DroneStateV1& state
     ) const;
 };
+

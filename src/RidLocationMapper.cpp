@@ -1,5 +1,7 @@
 #include "RidLocationMapper.h"
 #include <math.h>
+#include <limits.h>
+#include <string.h>
 
 namespace
 {

@@ -4,8 +4,12 @@
 #include "MavlinkAdapter.h"
 #include "RidLocationMapper.h"
 #include "RidLocationEncoder.h"
+#include "RidSystemMapper.h"
+#include "RidSystemEncoder.h"
 #include "RidBasicIdConfig.h"
 #include "RidBasicIdEncoder.h"
+#include "RidSelfId.h"
+#include "RidSelfIdEncoder.h"
 
 // BLE 4 legacy advertising; independent of TIMING_ONLY and packet diagnostics.
 #ifndef RID_BLE_LEGACY_ENABLED
@@ -50,6 +54,14 @@ DroneStateV1 droneState;
 MavlinkAdapter mavlinkAdapter(droneState);
 RidLocationMapper ridLocationMapper;
 RidLocationEncoder ridLocationEncoder;
+
+////////////////////////////////////////
+RidSystemMapper ridSystemMapper;
+RidSystemEncoder ridSystemEncoder;
+
+RidSelfId selfId;
+RidSelfIdEncoder ridSelfIdEncoder;
+//////////////////////////////////////////
 
 uint32_t lastDroneStatePrint = 0;
 
@@ -235,6 +247,549 @@ uint32_t lastRidBasicIdPacketPrintMs = 0;
 #endif
 
 } // namespace
+
+// ==========================================================================================================
+// 
+// ==========================================================================================================
+
+struct TakeoffSnapshot
+{
+    bool positionValid = false;
+
+    double latitudeDeg = 0.0;
+    double longitudeDeg = 0.0;
+
+    bool altitudeValid = false;
+    float altitudeHAEM = 0.0f;
+
+    bool locked = false;
+};
+
+TakeoffSnapshot takeoffSnapshot;
+
+
+// ==========================================================================================================
+// update
+// ==========================================================================================================
+
+void updateTakeoffSnapshot()
+{
+    if (takeoffSnapshot.locked)
+    {
+        return;
+    }
+
+
+    if (!droneState.positionValid)
+    {
+        return;
+    }
+
+
+    bool airborne =
+        droneState.operationalStatusValid &&
+        droneState.operationalStatus ==
+            RidOperationalStatus::AIRBORNE;
+
+
+    if (!airborne)
+    {
+        // While still on ground, continuously keep
+        // the newest valid candidate takeoff position.
+
+        takeoffSnapshot.positionValid = true;
+
+        takeoffSnapshot.latitudeDeg =
+            droneState.latitudeDeg;
+
+        takeoffSnapshot.longitudeDeg =
+            droneState.longitudeDeg;
+
+
+        takeoffSnapshot.altitudeValid =
+            droneState.geodeticAltitudeValid;
+
+        takeoffSnapshot.altitudeHAEM =
+            droneState.geodeticAltitudeM;
+
+        return;
+    }
+
+
+    // First AIRBORNE state:
+    // freeze last ground position.
+
+    if (!takeoffSnapshot.positionValid)
+    {
+        // Fallback if no previous ground sample existed.
+
+        takeoffSnapshot.positionValid = true;
+
+        takeoffSnapshot.latitudeDeg =
+            droneState.latitudeDeg;
+
+        takeoffSnapshot.longitudeDeg =
+            droneState.longitudeDeg;
+
+
+        takeoffSnapshot.altitudeValid =
+            droneState.geodeticAltitudeValid;
+
+        takeoffSnapshot.altitudeHAEM =
+            droneState.geodeticAltitudeM;
+    }
+
+
+    takeoffSnapshot.locked = true;
+
+
+    Serial.println(
+        "[RID SYSTEM] Takeoff position locked"
+    );
+}
+
+// ===========================================================================================================
+// Build Remote ID System Source
+// ===========================================================================================================
+
+RidSystemSource buildRidSystemSource()
+{
+    RidSystemSource source;
+
+
+    // ==================================================
+    // Operator source
+    // ==================================================
+
+    source.operatorLocationType =
+        RidOperatorLocationType::TAKEOFF;
+
+
+    // ==================================================
+    // Classification
+    //
+    // Prototype hiện tại không áp EU classification.
+    // ==================================================
+
+    source.classificationType =
+        RidClassificationType::UNDECLARED;
+
+
+    // ==================================================
+    // Takeoff position
+    // ==================================================
+
+    source.operatorPositionValid =
+        takeoffSnapshot.positionValid;
+
+
+    source.operatorLatitudeDeg =
+        takeoffSnapshot.latitudeDeg;
+
+
+    source.operatorLongitudeDeg =
+        takeoffSnapshot.longitudeDeg;
+
+
+    // ==================================================
+    // Single aircraft
+    // ==================================================
+
+    source.areaCount = 1;
+
+    source.areaRadiusM = 0.0f;
+
+
+    // No group / formation ceiling/floor.
+
+    source.areaCeilingValid = false;
+    source.areaFloorValid = false;
+
+
+    // ==================================================
+    // Classification
+    // ==================================================
+
+    source.categoryEU = 0;
+    source.classEU = 0;
+
+
+    // ==================================================
+    // Operator / Takeoff altitude
+    //
+    // Must be WGS84 HAE.
+    // ==================================================
+
+    source.operatorAltitudeValid =
+        takeoffSnapshot.altitudeValid;
+
+
+    source.operatorAltitudeM =
+        takeoffSnapshot.altitudeHAEM;
+
+
+    // ==================================================
+    // System Timestamp
+    //
+    // ASTM System timestamp is the applicability time
+    // of the Location message.
+    //
+    // Use the same absolute UTC time already maintained
+    // for Location.
+    // ==================================================
+
+    source.timestampValid =
+        droneState.locationTimestampValid;
+
+
+    source.timestampUtcUs =
+        droneState.locationTimestampUtcUs;
+
+
+    return source;
+}
+
+// ===========================================================================================================
+// Print Remote ID System Mapped
+// ===========================================================================================================
+
+void printRidSystemMapped()
+{
+    RidSystemSource source =
+        buildRidSystemSource();
+
+
+    RidSystemMapped rid =
+        ridSystemMapper.map(
+            source
+        );
+
+
+    Serial.println();
+    Serial.println(
+        "======= ASTM SYSTEM MAPPED ======="
+    );
+
+
+    Serial.print(
+        "Classification code   : "
+    );
+    Serial.println(
+        rid.classificationTypeCode
+    );
+
+
+    Serial.print(
+        "Operator type code     : "
+    );
+    Serial.println(
+        rid.operatorLocationTypeCode
+    );
+
+
+    Serial.print(
+        "Operator Pos valid     : "
+    );
+    Serial.println(
+        rid.operatorPositionValid
+            ? "YES"
+            : "NO"
+    );
+
+
+    Serial.print(
+        "Operator Lat code      : "
+    );
+    Serial.println(
+        rid.operatorLatitudeCode
+    );
+
+
+    Serial.print(
+        "Operator Lon code      : "
+    );
+    Serial.println(
+        rid.operatorLongitudeCode
+    );
+
+
+    Serial.print(
+        "Area Count code        : "
+    );
+    Serial.println(
+        rid.areaCountCode
+    );
+
+
+    Serial.print(
+        "Area Radius code       : "
+    );
+    Serial.println(
+        rid.areaRadiusCode
+    );
+
+
+    Serial.print(
+        "Area Ceiling code      : "
+    );
+    Serial.println(
+        rid.areaCeilingCode
+    );
+
+
+    Serial.print(
+        "Area Floor code        : "
+    );
+    Serial.println(
+        rid.areaFloorCode
+    );
+
+
+    Serial.print(
+        "Category code          : "
+    );
+    Serial.println(
+        rid.categoryCode
+    );
+
+
+    Serial.print(
+        "Class code             : "
+    );
+    Serial.println(
+        rid.classCode
+    );
+
+
+    Serial.print(
+        "Operator Alt valid     : "
+    );
+    Serial.println(
+        rid.operatorAltitudeValid
+            ? "YES"
+            : "NO"
+    );
+
+
+    Serial.print(
+        "Operator Alt code      : "
+    );
+    Serial.println(
+        rid.operatorAltitudeCode
+    );
+
+
+    Serial.print(
+        "Timestamp valid        : "
+    );
+    Serial.println(
+        rid.timestampValid
+            ? "YES"
+            : "NO"
+    );
+
+
+    Serial.print(
+        "Timestamp code         : "
+    );
+    Serial.println(
+        rid.timestampCode
+    );
+
+
+    Serial.println(
+        "=================================="
+    );
+}
+
+// ============================================================================================================
+// Print Remote ID System Encoded
+// ============================================================================================================
+
+void printRidSystemEncoded()
+{
+    RidSystemSource source =
+        buildRidSystemSource();
+
+
+    RidSystemMapped mapped =
+        ridSystemMapper.map(
+            source
+        );
+
+
+    uint8_t packet[
+        RidSystemEncoder::MESSAGE_SIZE
+    ];
+
+
+    ridSystemEncoder.encode(
+        mapped,
+        packet
+    );
+
+
+    Serial.println();
+    Serial.println(
+        "======= RID SYSTEM ENCODED ======="
+    );
+
+
+    for (
+        size_t i = 0;
+        i < RidSystemEncoder::MESSAGE_SIZE;
+        ++i
+    )
+    {
+        Serial.print("Byte ");
+
+        if (i < 10)
+        {
+            Serial.print(" ");
+        }
+
+
+        Serial.print(i);
+
+        Serial.print(" : 0x");
+
+
+        if (packet[i] < 0x10)
+        {
+            Serial.print("0");
+        }
+
+
+        Serial.println(
+            packet[i],
+            HEX
+        );
+    }
+
+
+    Serial.println(
+        "=================================="
+    );
+}
+
+// ============================================================================================================
+// Print Remote ID Self ID
+// ============================================================================================================
+
+void printRidSelfId()
+{
+    Serial.println();
+    Serial.println(
+        "======= SELF ID SOURCE ======="
+    );
+
+
+    Serial.print(
+        "Valid            : "
+    );
+
+    Serial.println(
+        selfId.valid
+            ? "YES"
+            : "NO"
+    );
+
+
+    Serial.print(
+        "Description Type : "
+    );
+
+    Serial.println(
+        static_cast<uint8_t>(
+            selfId.descriptionType
+        )
+    );
+
+
+    Serial.print(
+        "Description      : "
+    );
+
+    Serial.println(
+        selfId.description
+    );
+
+
+    Serial.println(
+        "=============================="
+    );
+}
+
+// ============================================================================================================
+// Print Remote ID Self ID Encoded
+// ============================================================================================================
+
+void printRidSelfIdEncoded()
+{
+    uint8_t packet[
+        RidSelfIdEncoder::MESSAGE_SIZE
+    ] = {};
+
+
+    bool encoded =
+        ridSelfIdEncoder.encode(
+            selfId,
+            packet
+        );
+
+
+    if (!encoded)
+    {
+        Serial.println(
+            "[SELF ID] ENCODE FAILED"
+        );
+
+        return;
+    }
+
+
+    Serial.println();
+    Serial.println(
+        "======= SELF ID ENCODED ======="
+    );
+
+
+    for (
+        size_t i = 0;
+        i < RidSelfIdEncoder::MESSAGE_SIZE;
+        ++i
+    )
+    {
+        Serial.print("Byte ");
+
+        if (i < 10)
+        {
+            Serial.print(" ");
+        }
+
+
+        Serial.print(i);
+
+        Serial.print(" : 0x");
+
+
+        if (packet[i] < 0x10)
+        {
+            Serial.print("0");
+        }
+
+
+        Serial.println(
+            packet[i],
+            HEX
+        );
+    }
+
+
+    Serial.println(
+        "==============================="
+    );
+}
 
 // ======================================================
 // HEARTBEAT
@@ -1549,6 +2104,22 @@ void setup()
         FC_TX
     );
 
+    // ==================================================
+    // SELF ID CONFIG
+    // ==================================================
+
+    selfId.valid = true;
+
+    selfId.descriptionType =
+        RidSelfIdDescriptionType::TEXT;
+
+    strncpy(
+        selfId.description,
+        "Self ID test",
+        sizeof(selfId.description) - 1
+    );
+
+
     Serial.println();
     Serial.println("====================================");
     Serial.println(" M5Stick MAVLink MULTI MSG TEST");
@@ -1717,6 +2288,16 @@ if (static_cast<uint32_t>(
     printDroneState();
     printRidLocationMapped();
     printRidLocationEncoded();
+
+    Serial.print("=============================SYSTEM MSG================================");
+    updateTakeoffSnapshot();
+    printRidSystemMapped();
+    printRidSystemEncoded();
+
+    Serial.print("=============================SELF ID MSG============================");
+    printRidSelfId();
+    printRidSelfIdEncoded();
+
 }
 
 const uint32_t reportNowMs = millis();
