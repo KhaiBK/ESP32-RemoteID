@@ -100,7 +100,8 @@ links the actual broadcaster, Location mapper/encoder and Basic ID encoder to
 an asynchronous fake GAP transport. It opens no serial port and uses no radio.
 The existing encoder/reference suites above remain unchanged.
 
-Results: 16,313 assertions, zero failures. Coverage includes full 31-byte golden
+Results: 93,032 assertions, zero failures. The original two-message regressions
+remain included. Coverage includes full 31-byte golden
 framing, UUID/application code, buffer guards, unchanged message bytes,
 alternation, per-type counters through wraparound, invalid/unset Basic ID,
 callback ordering, acknowledged dwell and publication deadlines, state freshness
@@ -116,3 +117,28 @@ latching and recovery, isolation of the outgoing guard from shared telemetry,
 age of the actual prepared packet, early stopping, and timestamped GAP restart
 gap accounting. Sensor applicability age and RF transmission are not proven by
 these tests; BUR0030 remains open. Existing encoder/reference suites are preserved.
+
+**Operator ID encoder and BLE integration**
+
+```powershell
+python tests/run_operator_id_tests.py
+python tests/run_ble_tests.py
+```
+
+The new encoder suite reuses the supplied, unchanged Operator ID encoder and
+separately compiled pinned Core C. It requires Python 3 and GCC/G++ (`--cc`,
+`--cxx` overrides). Result: 31,512 assertions and 1,921 complete 25-byte reference
+comparisons, zero failures. Output: `.pio/host-operator-id-tests/results.txt`.
+
+It covers a complete golden fixture, wire type 5/version 2/header 0x52, type 0,
+lengths 1..20, padding/reserved bytes, every nonzero input byte at every ID
+position, null/empty/long strings, all unsupported types and output guards.
+Fixtures are development-only, not assigned operator registrations.
+
+The BLE suite additionally covers the exact Operator AD buffer, internal index
+2 versus wire type 5, unchanged encoder bytes, Location/Basic/Location/Operator
+scheduling, all three counter wraps, delayed callbacks, invalid ID combinations,
+age-guard/recovery isolation, Operator start failure and overdue Location priority.
+Maximum host gaps with 30 ms simulated completion delay: Location 680 ms, Basic
+1360 ms, Operator 1360 ms. See `../docs/operator_id_ble.md` for the evidence and
+physical receiver test plan. No test runner uploads firmware or uses BLE RF.

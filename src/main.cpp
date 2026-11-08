@@ -13,6 +13,7 @@
 #endif
 #if RID_BLE_LEGACY_ENABLED
 #include "Esp32RidBleTransport.h"
+#include "RidOperatorIdConfig.h"
 #endif
 
 // Verbose capture is opt-in so the UART/parser loop stays responsive.
@@ -72,7 +73,8 @@ namespace
 void reportRidBle(const RidBleDiagnostic& diagnostic);
 Esp32RidBleTransport ridBleTransport;
 RidLocationAgeMonitor ridLocationAgeMonitor;
-RidBleBroadcaster ridBleBroadcaster(ridBleTransport, RidBasicIdConfig::identity(), reportRidBle);
+RidBleBroadcaster ridBleBroadcaster(ridBleTransport, RidBasicIdConfig::identity(),
+    RidOperatorIdConfig::TYPE, RidOperatorIdConfig::VALUE, reportRidBle);
 uint32_t lastRidBleSummaryMs = 0;
 bool ridBleInitReported = false;
 int32_t ridBleInitStatus = 0;
@@ -117,6 +119,9 @@ void reportRidBle(const RidBleDiagnostic& d)
                 const uint8_t* address = ridBleTransport.publicAddress();
                 Serial.printf("[RID BLE] public address=%02X:%02X:%02X:%02X:%02X:%02X legacy ADV_NONCONN_IND LE1M channels=37,38,39 interval=100ms\n",
                               address[0], address[1], address[2], address[3], address[4], address[5]);
+                if (ridBleBroadcaster.operatorIdAvailable())
+                    Serial.printf("[RID BLE] Operator ID DEVELOPMENT-ONLY type=%u value=%s\n",
+                                  static_cast<unsigned int>(RidOperatorIdConfig::TYPE), RidOperatorIdConfig::VALUE);
             }
             break;
         }
@@ -142,8 +147,11 @@ void reportRidBle(const RidBleDiagnostic& d)
 #endif
             break;
         case RidBleDiagnosticKind::BASIC_ID_REJECTED:
-            Serial.printf("[RID BLE] Basic ID suppressed: %s; Location only\n",
+            Serial.printf("[RID BLE] Basic ID suppressed: %s; remaining valid messages continue\n",
                           RidBasicIdEncoder::resultName(static_cast<RidBasicIdEncodeResult>(d.status)));
+            break;
+        case RidBleDiagnosticKind::OPERATOR_ID_REJECTED:
+            Serial.println("[RID BLE] Operator ID suppressed: invalid type or identifier; remaining valid messages continue");
             break;
         case RidBleDiagnosticKind::ERROR:
             Serial.printf("[RID BLE] ERROR operation=%s status=%ld (0x%08lX); updates halted, stop requested, reset required\n",

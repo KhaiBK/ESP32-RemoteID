@@ -5,9 +5,11 @@
 #include "RidLocationEncoder.h"
 #include "RidLocationMapper.h"
 #include "RidLocationAgeMonitor.h"
+#include "RidOperatorIdEncoder.h"
 
-enum class RidBleMessageType : uint8_t { BASIC_ID = 0, LOCATION = 1, COUNT = 2 };
-enum class RidBleOperation : uint8_t { INITIALIZE, CONFIGURE, START, STOP, EVENT_QUEUE, BASIC_VALIDATE, FRAME };
+// Internal storage/scheduler indices. OPERATOR_ID index 2 has ASTM wire type 5.
+enum class RidBleMessageType : uint8_t { BASIC_ID = 0, LOCATION = 1, OPERATOR_ID = 2, COUNT = 3 };
+enum class RidBleOperation : uint8_t { INITIALIZE, CONFIGURE, START, STOP, EVENT_QUEUE, BASIC_VALIDATE, FRAME, OPERATOR_VALIDATE };
 enum class RidBleEventType : uint8_t { CONFIGURED, STARTED, STOPPED, QUEUE_OVERFLOW };
 
 struct RidBleTransportEvent
@@ -43,7 +45,7 @@ public:
                        uint8_t* out, size_t outSize);
 };
 
-enum class RidBleDiagnosticKind : uint8_t { INITIALIZATION, ADVERTISING, BASIC_ID_REJECTED, ERROR, DEADLINE_MISSED, LOCATION_AGE_CHANGED };
+enum class RidBleDiagnosticKind : uint8_t { INITIALIZATION, ADVERTISING, BASIC_ID_REJECTED, ERROR, DEADLINE_MISSED, LOCATION_AGE_CHANGED, OPERATOR_ID_REJECTED };
 
 struct RidBleDiagnostic
 {
@@ -78,11 +80,15 @@ public:
     static constexpr uint32_t GAP_OPERATION_TIMEOUT_MS = 1000;
     static constexpr uint32_t LOCATION_MAX_GAP_MS = 1000;
     static constexpr uint32_t BASIC_ID_MAX_GAP_MS = 3000;
+    static constexpr uint32_t OPERATOR_ID_MAX_GAP_MS = 3000;
     static constexpr int32_t OPERATION_TIMEOUT = -1;
     static constexpr int32_t UNEXPECTED_EVENT = -2;
     static constexpr int32_t INVALID_FRAME = -3;
 
     RidBleBroadcaster(RidBleTransport& transport, const RidBasicIdV1& identity,
+                      RidBleReporter reporter = nullptr);
+    RidBleBroadcaster(RidBleTransport& transport, const RidBasicIdV1& identity,
+                      RidOperatorIdType operatorType, const char* operatorId,
                       RidBleReporter reporter = nullptr);
     bool begin(uint32_t nowMs);
     // Caller must apply freshness before every invocation. No delay or waits.
@@ -90,6 +96,7 @@ public:
                 const RidLocationAgeInfo& locationAge = RidLocationAgeInfo());
     bool healthy() const;
     bool basicIdAvailable() const { return basicIdValid; }
+    bool operatorIdAvailable() const { return operatorIdValid; }
     RidBleDiagnostic diagnostics(uint32_t nowMs) const;
     const uint8_t* currentAdvertisingData() const { return advertisingData; }
     static const char* operationName(RidBleOperation operation);
@@ -102,7 +109,10 @@ private:
     RidBleReporter reporter;
     State state = State::NOT_STARTED;
     bool basicIdValid = false;
+    bool operatorIdConfigured = false;
+    bool operatorIdValid = false;
     uint8_t basicPacket[25] = {};
+    uint8_t operatorPacket[25] = {};
     uint8_t advertisingData[31] = {};
     static constexpr size_t MESSAGE_TYPE_COUNT = static_cast<size_t>(RidBleMessageType::COUNT);
     uint8_t nextCounter[MESSAGE_TYPE_COUNT] = {};
@@ -123,6 +133,7 @@ private:
     uint32_t callbackDelayMs = 0, lastPublicationGapMs = 0;
     uint32_t successfulUpdates = 0, failedUpdates = 0;
     RidBleMessageType nextType = RidBleMessageType::LOCATION;
+    RidBleMessageType nextStaticType = RidBleMessageType::BASIC_ID;
     RidBleMessageType currentType = RidBleMessageType::LOCATION;
 
     void report(RidBleDiagnosticKind kind, RidBleOperation operation, int32_t status,
@@ -130,4 +141,5 @@ private:
     void fail(RidBleOperation operation, int32_t status, uint32_t nowMs);
     RidBleOperation pendingOperation() const;
     RidLocationAgeInfo currentLocationAge(uint32_t nowMs) const;
+    RidBleMessageType nextStaticMessage() const;
 };
