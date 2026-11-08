@@ -595,6 +595,242 @@ void activePacketAgeAndControllerGaps()
     CHECK(timed.healthy());
     std::puts("PASS active-packet age isolation/early stop and timestamped controller-gap measurements (not RF proof)");
 }
+
+void operatorFrame()
+{
+    uint8_t packet[25];
+    CHECK(RidOperatorIdEncoder().encode(RidOperatorIdType::OPERATOR_ID, "VN.OP2026840001", packet));
+    CHECK(packet[0] == 0x52 && packet[1] == 0);
+    CHECK(static_cast<unsigned>(RidBleMessageType::OPERATOR_ID) == 2);
+    const uint8_t expected[31] = {
+        0x1e, 0x16, 0xfa, 0xff, 0x0d, 0xa5,
+        0x52, 0x00, 0x56, 0x4e, 0x2e, 0x4f, 0x50, 0x32, 0x30, 0x32,
+        0x36, 0x38, 0x34, 0x30, 0x30, 0x30, 0x31, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+    uint8_t guarded[33];
+    std::memset(guarded, 0xcc, sizeof(guarded));
+    uint8_t original[25];
+    std::memcpy(original, packet, 25);
+    CHECK(RidBleLegacyFrame::encode(packet, 25, 0xa5, guarded + 1, 31));
+    CHECK(guarded[0] == 0xcc && guarded[32] == 0xcc);
+    CHECK(std::memcmp(guarded + 1, expected, 31) == 0);
+    CHECK(std::memcmp(packet, original, 25) == 0);
+    // Index 2 must never authorize ASTM Authentication/System/other types.
+    for (uint8_t header : {0x22, 0x32, 0x42, 0x62, 0xf2, 0x50, 0x51, 0x53})
+    {
+        packet[0] = header;
+        CHECK(!RidBleLegacyFrame::encode(packet, 25, 0, guarded + 1, 31));
+    }
+    CHECK(std::strcmp(RidBleBroadcaster::messageName(RidBleMessageType::OPERATOR_ID), "OPERATOR_ID") == 0);
+    std::puts("PASS Operator ID full 31-byte golden frame, wire type 5 / internal index 2, payload preservation");
+}
+
+class DelayedGap : public FakeGap
+{
+public:
+    unsigned delayPolls = 0, waited = 0;
+    bool poll(RidBleTransportEvent& event) override
+    {
+        if (events.empty()) return false;
+        if (waited++ < delayPolls) return false;
+        waited = 0;
+        return FakeGap::poll(event);
+    }
+};
+
+void operatorScheduling()
+{
+    for (unsigned profile = 0; profile < 2; ++profile)
+    {
+        diagnostics.clear();
+        DelayedGap gap;
+        gap.delayPolls = profile == 0 ? 0 : 2; // Completion observed after 10/30 ms.
+        char identity[] = "VN.OP2026840001";
+        RidBleBroadcaster b(gap, devIdentity(), RidOperatorIdType::OPERATOR_ID, identity, report);
+        // Caller input may change after construction; cached packet owns its bytes.
+        std::memset(identity, 'X', sizeof(identity) - 1);
+        CHECK(b.operatorIdAvailable());
+        const uint32_t origin = profile == 0 ? 0 : UINT32_MAX - 100;
+        CHECK(b.begin(origin));
+        run(b, exampleState(), origin, 730000, 10);
+        CHECK(b.healthy() && b.basicIdAvailable());
+        const uint8_t sequence[] = {0x12, 0x02, 0x12, 0x52};
+        uint8_t location[25], basic[25], operatorId[25];
+        RidLocationEncoder().encode(RidLocationMapper().map(exampleState()), location);
+        CHECK(RidBasicIdEncoder().encode(devIdentity(), basic, 25) == RidBasicIdEncodeResult::SUCCESS);
+        CHECK(RidOperatorIdEncoder().encode(RidOperatorIdType::OPERATOR_ID, "VN.OP2026840001", operatorId));
+        unsigned counts[3] = {};
+        for (size_t i = 0; i < gap.starts.size(); ++i)
+        {
+            const auto& frame = gap.starts[i];
+            CHECK(frame[6] == sequence[i % 4]);
+            const unsigned wireType = frame[6] >> 4;
+            const unsigned index = wireType == 5 ? 2 : wireType;
+            CHECK(index < 3);
+            if (index >= 3) continue;
+            CHECK(frame[5] == static_cast<uint8_t>(counts[index]++));
+            CHECK(std::memcmp(frame.data() + 6, index == 0 ? basic : index == 1 ? location : operatorId, 25) == 0);
+            CHECK(frame[0] == 30 && frame[1] == 0x16 && frame[4] == 0x0d);
+        }
+        CHECK(counts[0] > 512 && counts[1] > 512 && counts[2] > 512);
+        bool seen[3] = {};
+        uint32_t previous[3] = {}, maximumGap[3] = {};
+        unsigned recorded = 0;
+        for (const auto& d : diagnostics)
+        {
+            CHECK(d.kind != RidBleDiagnosticKind::ERROR && d.kind != RidBleDiagnosticKind::DEADLINE_MISSED);
+            if (d.kind != RidBleDiagnosticKind::ADVERTISING) continue;
+            const unsigned index = static_cast<unsigned>(d.messageType);
+            CHECK(index < 3 && d.payloadLength == 31);
+            if (index >= 3) continue;
+            CHECK(d.counter == gap.starts[recorded][5]);
+            CHECK(gap.starts[recorded++][6] == (index == 0 ? 0x02 : index == 1 ? 0x12 : 0x52));
+            if (seen[index])
+            {
+                const uint32_t elapsed = static_cast<uint32_t>(d.nowMs - previous[index]);
+                CHECK(elapsed <= (index == 1 ? 1000U : 3000U));
+                if (elapsed > maximumGap[index]) maximumGap[index] = elapsed;
+            }
+            else CHECK(static_cast<uint32_t>(d.nowMs - origin) <= (index == 1 ? 1000U : 3000U));
+            previous[index] = d.nowMs;
+            seen[index] = true;
+        }
+        CHECK(recorded == gap.starts.size());
+        CHECK(b.diagnostics(origin + 730000).successfulUpdates == recorded);
+        for (size_t i = 0; i < gap.calls.size(); ++i) CHECK(gap.calls[i] == "CAS"[i % 3]);
+        std::printf("PASS three-message timing profile %u: max Location=%u ms Basic=%u ms Operator=%u ms; independent counter wraps\n",
+                    profile, maximumGap[1], maximumGap[0], maximumGap[2]);
+    }
+}
+
+void operatorRejectionAndIsolation()
+{
+    const char* invalid[] = {nullptr, "", "123456789012345678901", "VN.BAD\nID", "VN.\x7f"};
+    for (const char* text : invalid)
+    {
+        diagnostics.clear();
+        FakeGap gap;
+        RidBleBroadcaster b(gap, devIdentity(), RidOperatorIdType::OPERATOR_ID, text, report);
+        CHECK(b.begin(0) && !b.operatorIdAvailable());
+        run(b, exampleState(), 0, 3000);
+        CHECK(b.healthy());
+        CHECK(gap.starts.size() > 4);
+        for (size_t i = 0; i < gap.starts.size(); ++i) CHECK(gap.starts[i][6] == (i % 2 == 0 ? 0x12 : 0x02));
+        bool rejected = false;
+        for (const auto& d : diagnostics)
+            if (d.kind == RidBleDiagnosticKind::OPERATOR_ID_REJECTED)
+            {
+                rejected = true;
+                CHECK(d.operation == RidBleOperation::OPERATOR_VALIDATE && d.payloadLength == 0);
+            }
+        CHECK(rejected);
+    }
+    for (unsigned type : {1U, 200U, 201U, 255U})
+    {
+        FakeGap gap;
+        RidBleBroadcaster b(gap, devIdentity(), static_cast<RidOperatorIdType>(type), "VN.OP2026840001");
+        CHECK(b.begin(0) && !b.operatorIdAvailable());
+        run(b, exampleState(), 0, 1500);
+        for (const auto& frame : gap.starts) CHECK(frame[6] != 0x52);
+    }
+    FakeGap operatorOnly;
+    RidBasicIdV1 emptyBasic;
+    RidBleBroadcaster b(operatorOnly, emptyBasic, RidOperatorIdType::OPERATOR_ID, "VN.OP2026840001");
+    CHECK(b.begin(0) && !b.basicIdAvailable() && b.operatorIdAvailable());
+    run(b, exampleState(), 0, 3000);
+    for (size_t i = 0; i < operatorOnly.starts.size(); ++i)
+        CHECK(operatorOnly.starts[i][6] == (i % 2 == 0 ? 0x12 : 0x52));
+    FakeGap locationOnly;
+    RidBleBroadcaster noIds(locationOnly, emptyBasic, RidOperatorIdType::OPERATOR_ID, "");
+    CHECK(noIds.begin(0));
+    run(noIds, exampleState(), 0, 2000);
+    for (const auto& frame : locationOnly.starts) CHECK(frame[6] == 0x12);
+    std::puts("PASS invalid/missing Operator ID suppression and Basic/Location fallback combinations");
+}
+
+void operatorFreshnessAndFailures()
+{
+    diagnostics.clear();
+    FakeGap gap;
+    RidBleBroadcaster b(gap, devIdentity(), RidOperatorIdType::OPERATOR_ID, "VN.OP2026840001", report);
+    CHECK(b.begin(0));
+    RidLocationAgeMonitor age;
+    age.observeSystemTime(120000, 0);
+    age.observePosition(60000, 0);
+    const auto s = exampleState();
+    for (uint32_t now = 0; now < 3000; ++now) b.update(now, s, age.snapshot(now));
+    unsigned counts[3] = {};
+    uint8_t expectedOperator[25];
+    CHECK(RidOperatorIdEncoder().encode(RidOperatorIdType::OPERATOR_ID, "VN.OP2026840001", expectedOperator));
+    for (const auto& frame : gap.starts)
+    {
+        const unsigned wire = frame[6] >> 4;
+        ++counts[wire == 5 ? 2 : wire];
+        if (wire == 1)
+        {
+            for (unsigned i = 11; i <= 18; ++i) CHECK(frame[i] == 0);
+            CHECK(frame[27] == 255 && frame[28] == 255);
+        }
+        if (wire == 5) CHECK(std::memcmp(frame.data() + 6, expectedOperator, 25) == 0);
+    }
+    CHECK(counts[0] >= 2 && counts[1] >= 2 && counts[2] >= 2);
+    CHECK(s.positionValid && s.heightValid); // Guard never changes shared state.
+    const size_t previousCount = gap.starts.size();
+    age.observeSystemTime(123000, 3000);
+    age.observePosition(123000, 3000);
+    for (uint32_t now = 3000; now < 3800; ++now) b.update(now, s, age.snapshot(now));
+    bool recovered = false;
+    uint8_t expectedLocation[25];
+    RidLocationEncoder().encode(RidLocationMapper().map(s), expectedLocation);
+    for (size_t i = previousCount; i < gap.starts.size(); ++i)
+        if (gap.starts[i][6] == 0x12 && std::memcmp(gap.starts[i].data() + 6, expectedLocation, 25) == 0) recovered = true;
+    CHECK(recovered && b.healthy());
+
+    // An Operator ID start failure cannot invent a publication/counter advance.
+    diagnostics.clear();
+    FakeGap failed;
+    RidBleBroadcaster fault(failed, devIdentity(), RidOperatorIdType::OPERATOR_ID, "VN.OP2026840001", report);
+    CHECK(fault.begin(0));
+    bool injected = false;
+    for (uint32_t now = 0; now < 2000; ++now)
+    {
+        fault.update(now, s);
+        if (!injected && !failed.configurations.empty() && failed.configurations.back()[6] == 0x52)
+        {
+            injected = true;
+            failed.startError = 73;
+        }
+    }
+    CHECK(injected && !fault.healthy());
+    CHECK(failed.starts.size() == 3); // Location, Basic, Location completed.
+    CHECK(sawError(RidBleOperation::START, 73));
+    const auto d = fault.diagnostics(2000);
+    CHECK(d.messageType == RidBleMessageType::OPERATOR_ID && d.counter == 0);
+    CHECK(d.successfulUpdates == 3 && d.failedUpdates == 1);
+    std::puts("PASS Operator-enabled stale Location/recovery isolation and failed Operator publication handling");
+}
+
+void operatorDeferredForLocation()
+{
+    diagnostics.clear();
+    FakeGap gap;
+    RidBleBroadcaster b(gap, devIdentity(), RidOperatorIdType::OPERATOR_ID, "VN.OP2026840001", report);
+    CHECK(b.begin(0));
+    run(b, exampleState(), 0, 509); // Location, Basic, Location; Operator is next.
+    CHECK(gap.starts.size() == 3 && gap.starts.back()[6] == 0x12);
+    // A delayed loop must favor Location rather than the pending Operator slot.
+    run(b, exampleState(), 1508, 4);
+    CHECK(gap.starts.size() == 4 && gap.starts.back()[6] == 0x12);
+    bool warned = false;
+    for (const auto& d : diagnostics)
+        if (d.kind == RidBleDiagnosticKind::DEADLINE_MISSED && d.messageType == RidBleMessageType::LOCATION) warned = true;
+    CHECK(warned && b.healthy());
+    run(b, exampleState(), 1512, 800);
+    CHECK(gap.starts.size() >= 7);
+    CHECK(gap.starts[4][6] == 0x52 && gap.starts[4][5] == 0);
+    CHECK(gap.starts[5][6] == 0x12 && gap.starts[6][6] == 0x02);
+    std::puts("PASS overdue Location precedes pending Operator ID; static rotation/counters resume without catch-up bursts");
+}
 } // namespace
 
 int main()
@@ -608,6 +844,11 @@ int main()
     payloadPreservationAndUnchangedCounters();
     locationAgeMonitoring();
     activePacketAgeAndControllerGaps();
+    operatorFrame();
+    operatorScheduling();
+    operatorRejectionAndIsolation();
+    operatorFreshnessAndFailures();
+    operatorDeferredForLocation();
     std::printf("BLE legacy: %u assertions, %u failures\n", assertions, failures);
     return failures ? 1 : 0;
 }

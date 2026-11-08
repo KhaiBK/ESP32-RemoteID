@@ -21,7 +21,7 @@ def main():
         parser.error("G++ must be on PATH, or specify --cxx.")
     BUILD.mkdir(parents=True, exist_ok=True)
     exe = BUILD / ("ble_legacy_tests.exe" if os.name == "nt" else "ble_legacy_tests")
-    sources = ["RidBleBroadcaster.cpp", "RidLocationAgeMonitor.cpp", "RidBasicIdEncoder.cpp",
+    sources = ["RidBleBroadcaster.cpp", "RidLocationAgeMonitor.cpp", "RidBasicIdEncoder.cpp", "RidOperatorIdEncoder.cpp",
                "RidLocationMapper.cpp", "RidLocationEncoder.cpp"]
     subprocess.run([cxx, "-std=c++11", "-O2", "-Wall", "-Wextra", "-pedantic",
                     "-I", str(ROOT / "include"),

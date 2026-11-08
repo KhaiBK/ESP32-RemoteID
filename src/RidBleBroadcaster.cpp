@@ -4,14 +4,16 @@
 
 static_assert(RidLocationEncoder::MESSAGE_SIZE == 25, "Location payload must be 25 bytes");
 static_assert(RidBasicIdEncoder::MESSAGE_SIZE == 25, "Basic ID payload must be 25 bytes");
+static_assert(RidOperatorIdEncoder::MESSAGE_SIZE == 25, "Operator ID payload must be 25 bytes");
 
 bool RidBleLegacyFrame::encode(const uint8_t* message, size_t messageLength,
                                uint8_t counter, uint8_t* out, size_t outSize)
 {
     if (out == nullptr || outSize < ADVERTISING_SIZE) return false;
     memset(out, 0, ADVERTISING_SIZE);
-    if (message == nullptr || messageLength != MESSAGE_SIZE ||
-        (message[0] & 0x0f) != 2 || (message[0] >> 4) > 1) return false;
+    if (message == nullptr || messageLength != MESSAGE_SIZE) return false;
+    const uint8_t wireType = message[0] >> 4;
+    if ((message[0] & 0x0f) != 2 || (wireType != 0 && wireType != 1 && wireType != 5)) return false;
     const uint8_t prefix[] = {0x1e, 0x16, 0xfa, 0xff, 0x0d};
     memcpy(out, prefix, sizeof(prefix));
     out[5] = counter;
@@ -25,6 +27,17 @@ RidBleBroadcaster::RidBleBroadcaster(RidBleTransport& transport,
 {
 }
 
+RidBleBroadcaster::RidBleBroadcaster(RidBleTransport& transport, const RidBasicIdV1& identity,
+                                   RidOperatorIdType operatorType, const char* operatorId,
+                                   RidBleReporter reporter)
+    : RidBleBroadcaster(transport, identity, reporter)
+{
+    // Cache the encoder's validated output. No caller string pointer survives
+    // construction, and no BLE operation occurs until begin()/update().
+    operatorIdConfigured = true;
+    operatorIdValid = RidOperatorIdEncoder().encode(operatorType, operatorId, operatorPacket);
+}
+
 void RidBleBroadcaster::report(RidBleDiagnosticKind kind, RidBleOperation operation,
                               int32_t status, uint32_t nowMs, uint32_t gapMs)
 {
@@ -34,7 +47,8 @@ void RidBleBroadcaster::report(RidBleDiagnosticKind kind, RidBleOperation operat
         d.kind = kind;
         d.operation = operation;
         d.status = status;
-        if (kind == RidBleDiagnosticKind::INITIALIZATION || kind == RidBleDiagnosticKind::BASIC_ID_REJECTED)
+        if (kind == RidBleDiagnosticKind::INITIALIZATION || kind == RidBleDiagnosticKind::BASIC_ID_REJECTED ||
+            kind == RidBleDiagnosticKind::OPERATOR_ID_REJECTED)
             d.payloadLength = 0;
         if (kind == RidBleDiagnosticKind::DEADLINE_MISSED) d.gapMs = gapMs;
         if (kind == RidBleDiagnosticKind::LOCATION_AGE_CHANGED) d.locationAge = latestLocationAge;
@@ -93,6 +107,8 @@ bool RidBleBroadcaster::begin(uint32_t nowMs)
     if (!basicIdValid)
         report(RidBleDiagnosticKind::BASIC_ID_REJECTED, RidBleOperation::BASIC_VALIDATE,
                static_cast<int32_t>(result), nowMs);
+    if (operatorIdConfigured && !operatorIdValid)
+        report(RidBleDiagnosticKind::OPERATOR_ID_REJECTED, RidBleOperation::OPERATOR_VALIDATE, 1, nowMs);
     const int32_t status = transport.begin();
     report(RidBleDiagnosticKind::INITIALIZATION, RidBleOperation::INITIALIZE, status, nowMs);
     state = status == 0 ? State::READY : State::FAULT;
@@ -174,8 +190,9 @@ void RidBleBroadcaster::update(uint32_t nowMs, const DroneStateV1& freshnessChec
             const size_t index = static_cast<size_t>(currentType);
             const uint32_t gap = static_cast<uint32_t>(completedMs - lastPublishedMs[index]);
             lastPublicationGapMs = published[index] ? gap : 0;
-            if (published[index] && gap > (currentType == RidBleMessageType::LOCATION
-                                          ? LOCATION_MAX_GAP_MS : BASIC_ID_MAX_GAP_MS))
+            const uint32_t maxGap = currentType == RidBleMessageType::LOCATION ? LOCATION_MAX_GAP_MS
+                : currentType == RidBleMessageType::BASIC_ID ? BASIC_ID_MAX_GAP_MS : OPERATOR_ID_MAX_GAP_MS;
+            if (published[index] && gap > maxGap)
                 report(RidBleDiagnosticKind::DEADLINE_MISSED, RidBleOperation::START, 0, nowMs, gap);
             lastPublishedMs[index] = completedMs;
             published[index] = true;
@@ -190,8 +207,15 @@ void RidBleBroadcaster::update(uint32_t nowMs, const DroneStateV1& freshnessChec
                 switchLatencyMs = static_cast<uint32_t>(completedMs - stopRequestedMs);
                 stoppedObserved = false;
             }
-            nextType = currentType == RidBleMessageType::LOCATION && basicIdValid
-                ? RidBleMessageType::BASIC_ID : RidBleMessageType::LOCATION;
+            if (currentType == RidBleMessageType::LOCATION) nextType = nextStaticMessage();
+            else
+            {
+                // Always place Location between static ID slots. Advance the
+                // static rotation only after its successful start completion.
+                nextStaticType = currentType == RidBleMessageType::BASIC_ID
+                    ? RidBleMessageType::OPERATOR_ID : RidBleMessageType::BASIC_ID;
+                nextType = RidBleMessageType::LOCATION;
+            }
             state = State::ADVERTISING;
             report(RidBleDiagnosticKind::ADVERTISING, RidBleOperation::START, 0, nowMs);
         }
@@ -202,11 +226,12 @@ void RidBleBroadcaster::update(uint32_t nowMs, const DroneStateV1& freshnessChec
         // Prefer fresh Location after a delayed loop instead of catching up
         // missed slots with stale cached packets. Healthy operation alternates.
         currentType = nextType;
-        if (!basicIdValid || (published[1] &&
+        if ((!basicIdValid && !operatorIdValid) || (published[1] &&
             static_cast<uint32_t>(nowMs - lastPublishedMs[1]) >= 750))
             currentType = RidBleMessageType::LOCATION;
         uint8_t packet[25];
         if (currentType == RidBleMessageType::BASIC_ID) memcpy(packet, basicPacket, sizeof(packet));
+        else if (currentType == RidBleMessageType::OPERATOR_ID) memcpy(packet, operatorPacket, sizeof(packet));
         else RidLocationEncoder().encode(RidLocationMapper().map(outgoingState), packet);
         if (!RidBleLegacyFrame::encode(packet, sizeof(packet),
                                       nextCounter[static_cast<size_t>(currentType)],
@@ -266,6 +291,14 @@ void RidBleBroadcaster::update(uint32_t nowMs, const DroneStateV1& freshnessChec
     }
 }
 
+RidBleMessageType RidBleBroadcaster::nextStaticMessage() const
+{
+    if (nextStaticType == RidBleMessageType::OPERATOR_ID && operatorIdValid) return RidBleMessageType::OPERATOR_ID;
+    if (basicIdValid) return RidBleMessageType::BASIC_ID;
+    if (operatorIdValid) return RidBleMessageType::OPERATOR_ID;
+    return RidBleMessageType::LOCATION;
+}
+
 const char* RidBleBroadcaster::operationName(RidBleOperation operation)
 {
     switch (operation)
@@ -277,11 +310,18 @@ const char* RidBleBroadcaster::operationName(RidBleOperation operation)
         case RidBleOperation::EVENT_QUEUE: return "EVENT_QUEUE";
         case RidBleOperation::BASIC_VALIDATE: return "BASIC_VALIDATE";
         case RidBleOperation::FRAME: return "FRAME";
+        case RidBleOperation::OPERATOR_VALIDATE: return "OPERATOR_VALIDATE";
         default: return "UNKNOWN";
     }
 }
 
 const char* RidBleBroadcaster::messageName(RidBleMessageType type)
 {
-    return type == RidBleMessageType::LOCATION ? "LOCATION" : "BASIC_ID";
+    switch (type)
+    {
+        case RidBleMessageType::BASIC_ID: return "BASIC_ID";
+        case RidBleMessageType::LOCATION: return "LOCATION";
+        case RidBleMessageType::OPERATOR_ID: return "OPERATOR_ID";
+        default: return "UNKNOWN";
+    }
 }

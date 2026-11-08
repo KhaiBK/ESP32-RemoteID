@@ -1,9 +1,10 @@
 # BLE 4 legacy Remote ID prototype
 
-The existing Location and Basic ID encoders remain the source of the 25-byte
-messages. This addition wraps those messages in OpenDroneID BLE legacy Service
-Data. It implements the requested two-message prototype, not a complete Remote
-ID message set or a certification claim.
+The existing Location, Basic ID and Operator ID encoders remain the source of
+the 25-byte messages. They are wrapped in OpenDroneID BLE legacy Service Data.
+This three-message prototype is not a complete Remote ID message set or a
+certification claim. See [Operator ID integration](operator_id_ble.md) for its
+configuration, Location-priority schedule, tests and device checklist.
 
 ## Installed stack and raw payload support
 
@@ -36,6 +37,8 @@ UART -> MAVLink parser -> MavlinkAdapter -> updateFreshness -> DroneStateV1
                                         RidLocationMapper -> RidLocationEncoder
                                                                |
 RidBasicIdConfig -> RidBasicIdEncoder --------------------------+
+                                                               |
+RidOperatorIdConfig -> RidOperatorIdEncoder --------------------+
                                                                |
                                       RidBleBroadcaster (31-byte frame/scheduler)
                                                                |
@@ -78,21 +81,21 @@ Preferences storage is added. Arduino/SDK internal initialization is unchanged.
 | 2-3 | `FA FF` | UUID `0xFFFA`, little endian |
 | 4 | `0D` | OpenDroneID application code |
 | 5 | counter | Unsigned 8-bit message counter |
-| 6-30 | 25-byte message | Existing Basic ID (`02 ...`) or Location (`12 ...`) |
+| 6-30 | 25-byte message | Basic ID (`02 ...`), Location (`12 ...`), or Operator ID (`52 ...`) |
 
 This matches the [OpenDroneID Linux transmitter's legacy framing](https://github.com/opendroneid/transmitter-linux/blob/main/bluetooth.c#L145-L180).
 Its extra HCI command length byte `1F` is **not** part of the AD buffer passed
 to ESP-IDF. There is only one AD structure; no bytes are available for another.
 
-Basic ID and Location have separate message counters, as described by the
+Basic ID, Location and Operator ID have separate message counters, as described by the
 OpenDroneID Core C transport guidance. Each starts at zero and increments after
 a successful advertising-start completion, wrapping `255 -> 0`. Retransmissions
 of an unchanged frame during its dwell retain the counter. Location refreshes
-before starting do not consume extra counters. Both messages use the same
+before starting do not consume extra counters. All messages use the same
 controller and public BLE address; the MAC is printed at initialization.
 
 For unchanged payloads the chosen permitted policy increments only that type's
-counter on each successful publication. It does not increment both counters on
+counter on each successful publication. It does not increment other types' counters on
 a switch. Failed configure/start requests consume no counter. Per-type storage
 is sized by a COUNT constant; future types require an explicit scheduling policy
 and encoder. Multipage messages are not supported in V1.
@@ -101,9 +104,10 @@ and encoder. Multipage messages are not supported in V1.
 
 - The radio interval is 100 ms (`0x00A0` in 0.625 ms units). Each message dwells
   for 250 ms from its start acknowledgement, allowing repeated radio
-  transmissions. With prompt callbacks and a responsive loop, Basic ID and
-  Location alternate about every 250 ms, updating each about twice per second.
-  This exceeds the requested prototype Location 1 Hz / Basic ID once per 3 s.
+  transmissions. With prompt callbacks and a responsive loop, the schedule is
+  Location -> Basic -> Location -> Operator. Location updates about twice per
+  second; each static ID about once per second. Absent/invalid IDs are skipped.
+  This targets Location <=1 s and each static message <=3 s.
 - The sequence is `configure raw -> configure acknowledgement -> start -> start
   acknowledgement -> dwell -> stop -> stop acknowledgement -> next configure`.
   No payload mutation is submitted while advertising is running. There are no
@@ -125,7 +129,7 @@ and encoder. Multipage messages are not supported in V1.
   cannot start an old prepared frame after a long main-loop stall.
 - After a delayed loop, Location is preferred if its last publication is at
   least 750 ms old; missed slots are not replayed in a catch-up burst. Publication
-  gaps over 1000 ms for Location or 3000 ms for Basic ID produce warnings.
+  gaps over 1000 ms for Location or 3000 ms for Basic/Operator ID produce warnings.
   Timing cannot be guaranteed during controller faults or long loop stalls;
   measured reception cadence must be checked on hardware.
 - Diagnostics measure stop-completion to start-completion `restartGap_ms`, its
@@ -150,15 +154,17 @@ not establish assignment or uniqueness; no production serial is assigned yet.
 
 ```powershell
 python tests/run_ble_tests.py
+python tests/run_operator_id_tests.py
 python tests/run_basic_id_tests.py
 python tests/run_location_tests.py
 platformio run -e m5stick-c
 ```
 
-BLE results: 16,313 assertions, zero failures. The suite exercises complete
+BLE results: 93,032 assertions, zero failures (including the original two-message
+regressions and new three-message tests). The suite exercises complete
 golden framing, UUID/application, guards, exact payload preservation, callback
 ordering, 250 ms acknowledged dwell, alternation and publication deadlines,
-more than two wraps of both counters, invalid/unset Basic ID suppression,
+more than two wraps of all three counters, invalid/unset Basic ID suppression,
 freshness handoff and refresh while configuring, delayed-loop priority,
 rollover, request/completion errors, late/missing callbacks and queue faults.
 Additional tests cover both actual encoders' exact insertion and immutable
@@ -194,8 +200,8 @@ previously documented adapter observations; BLE does not change those policies.
    A scanner displaying only service data after the UUID shows **27** bytes:
    `0D counter ...25 RID bytes...`. That is the same advertisement with its AD
    header and UUID removed by the UI, not a shorter transmitted packet.
-5. Observe RID header `12` for Location and `02` for Basic ID at AD offset 6.
-   Confirm both appear from the same MAC, counters advance modulo 256 for each
+5. Observe RID headers `12` for Location, `02` for Basic and `52` for Operator at AD offset 6.
+   Confirm all appear from the same MAC, counters advance modulo 256 for each
    type, and repeated radio packets within one dwell may repeat the counter.
    Record a packet history to measure per-type receive gaps. RF loss can make
    observed gaps larger than the firmware's configured update period.
@@ -276,11 +282,11 @@ results do not certify the complete ASTM standard or prove RF behavior.
 | BB40010 | Original ESP32 legacy API, uncoded LE 1M. | RF/receiver confirmation pending. |
 | BB40030 | Exact single 31-byte AD structure; golden tests; no extra AD fields or physical-layer bytes. | On-air capture pending. |
 | BUR0010 | Existing 250 ms windows give about a 500 ms Location cycle plus callback overhead; host limits pass. | Real callback/reception intervals unverified. Faults or long stalls can exceed 1 s and are reported. |
-| BUR0020 | Same alternation refreshes valid Basic ID about every 500 ms. Invalid/unset identity is suppressed. | Hardware timing confirmation pending. |
+| BUR0020 | Static slots alternate Basic/Operator between Location slots, refreshing each valid ID about every 1 s plus overhead. Invalid/unset identity is suppressed. | Hardware timing confirmation pending. |
 | BUR0030 | Receive/tag/prepared/advertising ages distinguished; known-old GPI guard tested. | **OPEN:** true applicability age, FC semantics, latency/clock bounds and age on air. |
 | BUR0040 | Repeated nonconnectable events on all three channels; no receiver ACK assumed. | Interference/saturation performance untested. GAP control faults halt updates with best-effort stop/reset required. |
 | BUR0050 | Separate uint8 counters; wraparound, unchanged-payload policy and failures tested. | Confirm counters in received packets. |
-| BUR0060 | No multipage message is implemented. | Not applicable to these two single-page messages; required before multipage support. |
+| BUR0060 | No multipage message is implemented. | Not applicable to these single-page messages; required before multipage support. |
 
 The existing 25-byte Location/Basic ID outputs were hardware-tested before this
 work. New BLE transport, timing diagnostics and age guard have source/host/build
