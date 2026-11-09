@@ -5,6 +5,7 @@
 #include "RidLocationMapper.h"
 #include "RidLocationEncoder.h"
 #include "RidOperatorIdEncoder.h"
+#include "RidAuthEncoder.h"
 
 
 HardwareSerial FCSerial(2);
@@ -26,6 +27,24 @@ constexpr RidOperatorIdType OPERATOR_ID_TYPE =
     RidOperatorIdType::CAA_ASSIGNED;
 constexpr char OPERATOR_ID[] = "VN.OP2026840001";
 
+// ======================================================
+// Remote ID Authentication Configuration (ASTM F3411-22a Table 8 & Table 9)
+// Table 8 & 9 quy định:
+//   - Msg Type: 0x2 (Authentication Message), Proto Version: 0x2 -> 0x22
+//   - Auth Type: 1 = UAS_ID_SIGNATURE, 2 = OPERATOR_ID_SIGNATURE, etc.
+//   - Paging:
+//       Page 0 (Table 8): AuthType, Last Page Index, Total Length, Timestamp, 17 bytes Auth Data
+//       Pages 1..15 (Table 9): AuthType, Page Number, 23 bytes Auth Data per page
+// ======================================================
+constexpr RidAuthType AUTH_TYPE = RidAuthType::UAS_ID_SIGNATURE;
+// Dữ liệu chữ ký mẫu 20 bytes (minh họa chia trang: Page 0 mang 17 bytes, Page 1 mang 3 bytes)
+const uint8_t SAMPLE_AUTH_DATA[] = {
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+    0x38, 0x39, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
+    0x47, 0x48, 0x49, 0x4A
+};
+constexpr size_t SAMPLE_AUTH_DATA_LEN = sizeof(SAMPLE_AUTH_DATA);
+
 mavlink_message_t msg;
 mavlink_status_t status;
 
@@ -34,6 +53,7 @@ MavlinkAdapter mavlinkAdapter(droneState);
 RidLocationMapper ridLocationMapper;
 RidLocationEncoder ridLocationEncoder;
 RidOperatorIdEncoder ridOperatorIdEncoder;
+RidAuthEncoder ridAuthEncoder;
 
 uint32_t lastDroneStatePrint = 0;
 
@@ -1049,6 +1069,77 @@ void printRidOperatorIdEncoded()
     Serial.println("=====================================================");
 }
 
+void printRidAuthEncoded()
+{
+    uint8_t packets[RidAuthEncoder::MAX_PAGES][RidAuthEncoder::MESSAGE_SIZE];
+    size_t pagesWritten = 0;
+
+    uint32_t astmTimestamp = 0;
+    if (droneState.locationTimestampValid && droneState.locationTimestampUtcUs > 0)
+    {
+        uint64_t unixSec = droneState.locationTimestampUtcUs / 1000000ULL;
+        astmTimestamp = RidAuthEncoder::toAstmTimestamp(unixSec);
+    }
+    else
+    {
+        astmTimestamp = 12345678U; // Thời gian mẫu (tính từ 2019-01-01 00:00:00 UTC)
+    }
+
+    if (!ridAuthEncoder.encodeAllPages(
+            AUTH_TYPE,
+            astmTimestamp,
+            SAMPLE_AUTH_DATA,
+            SAMPLE_AUTH_DATA_LEN,
+            packets,
+            RidAuthEncoder::MAX_PAGES,
+            &pagesWritten))
+    {
+        Serial.println();
+        Serial.println("RID AUTHENTICATION: not encoded");
+        return;
+    }
+
+    Serial.println();
+    Serial.println("===== RID AUTHENTICATION (ASTM F3411-22a Table 8 & 9) =====");
+    Serial.print("Auth Type       : ");
+    Serial.println(static_cast<uint8_t>(AUTH_TYPE));
+    Serial.print("Total Pages     : ");
+    Serial.println(pagesWritten);
+    Serial.print("Data Length     : ");
+    Serial.println(SAMPLE_AUTH_DATA_LEN);
+    Serial.print("ASTM Timestamp  : ");
+    Serial.println(astmTimestamp);
+
+    for (size_t p = 0; p < pagesWritten; ++p)
+    {
+        Serial.print("--- Page ");
+        Serial.print(p);
+        Serial.println(" ---");
+
+        for (size_t i = 0; i < RidAuthEncoder::MESSAGE_SIZE; ++i)
+        {
+            Serial.print("Byte ");
+
+            if (i < 10)
+            {
+                Serial.print(" ");
+            }
+
+            Serial.print(i);
+            Serial.print(" : 0x");
+
+            if (packets[p][i] < 0x10)
+            {
+                Serial.print("0");
+            }
+
+            Serial.println(packets[p][i], HEX);
+        }
+    }
+
+    Serial.println("============================================================");
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -1158,5 +1249,6 @@ void loop()
     printRidLocationMapped();
     printRidLocationEncoded();
     printRidOperatorIdEncoded();
+    printRidAuthEncoded();
 }
 }
